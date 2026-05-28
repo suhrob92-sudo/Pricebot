@@ -204,6 +204,36 @@ async def cmd_unban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("❌ Noto'g'ri ID format.")
 
 
+async def cmd_debug(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_admin(update.effective_user.id):
+        return
+
+    from bot.config import SCRAPERAPI_KEY
+    key_status = f"✅ Set ({SCRAPERAPI_KEY[:8]}...)" if SCRAPERAPI_KEY else "❌ Not set"
+    msg = await update.message.reply_text(
+        f"🔍 Scraperlar tekshirilmoqda...\n🔑 ScraperAPI: {key_status}",
+        parse_mode="HTML",
+    )
+
+    from bot.services.price_comparator import PriceComparator
+    import asyncio
+
+    comp = PriceComparator()
+    lines = [f"🔑 ScraperAPI: {key_status}\n"]
+
+    for scraper in comp.scrapers:
+        try:
+            results = await asyncio.wait_for(scraper.search("iphone"), timeout=45)
+            status = f"✅ {len(results)} natija"
+        except asyncio.TimeoutError:
+            status = "⏱ Timeout (45s)"
+        except Exception as e:
+            status = f"❌ {str(e)[:40]}"
+        lines.append(f"{scraper.MARKETPLACE_EMOJI} {scraper.MARKETPLACE_NAME}: {status}")
+
+    await msg.edit_text("\n".join(lines), parse_mode="HTML")
+
+
 def get_handlers():
     broadcast_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(cb_broadcast_prompt, pattern=r"^admin:broadcast$")],
@@ -221,6 +251,7 @@ def get_handlers():
         CommandHandler("admin", cmd_admin),
         CommandHandler("ban", cmd_ban),
         CommandHandler("unban", cmd_unban),
+        CommandHandler("debug", cmd_debug),
         CallbackQueryHandler(cb_admin_stats, pattern=r"^admin:stats$"),
         CallbackQueryHandler(cb_admin_users, pattern=r"^admin:users$"),
         broadcast_conv,

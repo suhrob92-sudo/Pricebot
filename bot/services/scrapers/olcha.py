@@ -1,5 +1,4 @@
 import logging
-import re
 from typing import List
 from urllib.parse import quote
 
@@ -8,7 +7,6 @@ from bot.services.scrapers.base import BaseScraper, ProductResult
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://olcha.uz"
-SEARCH_URL = "https://olcha.uz/search/{query}"
 
 
 class OlchaScraper(BaseScraper):
@@ -27,21 +25,41 @@ class OlchaScraper(BaseScraper):
         )
 
     async def search(self, query: str) -> List[ProductResult]:
-        url = SEARCH_URL.format(query=quote(query))
+        # Olcha uses dashes for spaces in search URLs
+        slug = quote(query)
+        url = f"{BASE_URL}/search/{slug}"
         try:
-            soup = await self._get_soup(url)
-            if not soup:
+            html = await self._get(url, render=True)
+            if not isinstance(html, str):
+                logger.warning("Olcha: no HTML returned")
                 return []
 
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(html, "lxml")
             results = []
-            product_cards = soup.select(".product-card, .product-item, article.product")
-            if not product_cards:
-                product_cards = soup.select("[class*='product']")[:20]
 
-            for card in product_cards[:10]:
+            # Try multiple selectors to find product cards
+            cards = (
+                soup.select('.product-card')
+                or soup.select('.product-item')
+                or soup.select('article.product')
+                or soup.select('[class*="product-card"]')
+                or soup.select('[class*="productCard"]')
+                or soup.select('[class*="catalog-item"]')
+                or soup.select('[class*="product"]')[:20]
+            )
+
+            logger.info(f"Olcha: found {len(cards)} product cards")
+
+            for card in cards[:10]:
                 try:
-                    name_el = card.select_one(
-                        ".product-card__name, .product-name, h3, h2, [class*='name']"
+                    name_el = (
+                        card.select_one('.product-card__name')
+                        or card.select_one('.product-name')
+                        or card.select_one('[class*="name"]')
+                        or card.select_one('[class*="title"]')
+                        or card.select_one('h3')
+                        or card.select_one('h2')
                     )
                     if not name_el:
                         continue
@@ -49,31 +67,31 @@ class OlchaScraper(BaseScraper):
                     if not name or len(name) < 3:
                         continue
 
-                    price_el = card.select_one(
-                        ".product-card__price, .price, [class*='price']"
+                    price_el = (
+                        card.select_one('.product-card__price')
+                        or card.select_one('[class*="price"]')
+                        or card.select_one('[class*="Price"]')
+                        or card.select_one('[class*="cost"]')
                     )
                     if not price_el:
                         continue
                     price_text = price_el.get_text(strip=True)
-                    price_clean = re.sub(r"[^\d]", "", price_text)
-                    if not price_clean:
-                        continue
-                    price = float(price_clean)
+                    price = self._parse_price(price_text)
                     if price <= 0:
                         continue
 
-                    link_el = card.select_one("a[href]")
+                    link_el = card.select_one('a[href]')
                     if link_el:
-                        href = link_el.get("href", "")
-                        product_url = href if href.startswith("http") else BASE_URL + href
+                        href = link_el.get('href', '')
+                        product_url = href if href.startswith('http') else BASE_URL + href
                     else:
                         product_url = BASE_URL
 
-                    img_el = card.select_one("img")
+                    img_el = card.select_one('img')
                     image_url = None
                     if img_el:
-                        image_url = img_el.get("data-src") or img_el.get("src")
-                        if image_url and not image_url.startswith("http"):
+                        image_url = img_el.get('data-src') or img_el.get('src')
+                        if image_url and not image_url.startswith('http'):
                             image_url = BASE_URL + image_url
 
                     results.append(self._make_result(name, price, product_url, image_url))

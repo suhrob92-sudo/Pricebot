@@ -6,7 +6,7 @@ from bot.services.scrapers.base import BaseScraper, ProductResult
 
 logger = logging.getLogger(__name__)
 
-SEARCH_URL = "https://api.uzum.uz/api/main/search"
+BASE_URL = "https://uzum.uz"
 
 
 class UzumScraper(BaseScraper):
@@ -19,59 +19,83 @@ class UzumScraper(BaseScraper):
         super().__init__()
         self.headers.update(
             {
-                "Accept": "application/json",
-                "Origin": "https://uzum.uz",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                 "Referer": "https://uzum.uz/",
             }
         )
 
     async def search(self, query: str) -> List[ProductResult]:
-        params = {
-            "categoryId": "0",
-            "showAdultContent": "false",
-            "keyword": query,
-            "size": "10",
-            "page": "0",
-        }
+        url = f"{BASE_URL}/search?keyword={quote(query)}"
         try:
-            data = await self._get(SEARCH_URL, params=params)
-            if not isinstance(data, dict):
+            html = await self._get(url, render=True)
+            if not isinstance(html, str):
+                logger.warning("Uzum: no HTML returned")
                 return []
-            products = data.get("productList", {})
-            if isinstance(products, dict):
-                items = products.get("products", [])
-            else:
-                items = data.get("data", {}).get("products", [])
-                if not items:
-                    items = data.get("products", [])
 
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(html, "lxml")
             results = []
-            for item in items[:10]:
+
+            # Try multiple selectors to find product cards
+            cards = (
+                soup.select('[data-product-id]')
+                or soup.select('[class*="product-card"]')
+                or soup.select('[class*="ProductCard"]')
+                or soup.select('[class*="productCard"]')
+                or soup.select('[class*="catalog-item"]')
+                or soup.select('[class*="catalogItem"]')
+                or soup.select('article')
+            )
+
+            logger.info(f"Uzum: found {len(cards)} product cards")
+
+            for card in cards[:10]:
                 try:
-                    name = item.get("title") or item.get("name") or "Unknown"
-                    price_data = item.get("minSellPrice") or item.get("price") or 0
-                    if isinstance(price_data, dict):
-                        price = float(price_data.get("amount", 0)) / 100
+                    name_el = (
+                        card.select_one('[class*="title"]')
+                        or card.select_one('[class*="name"]')
+                        or card.select_one('h2')
+                        or card.select_one('h3')
+                    )
+                    price_el = (
+                        card.select_one('[class*="price"]')
+                        or card.select_one('[class*="Price"]')
+                        or card.select_one('[class*="cost"]')
+                    )
+                    link_el = card.select_one('a[href]')
+
+                    if not name_el or not price_el:
+                        continue
+
+                    name = name_el.get_text(strip=True)
+                    if not name or len(name) < 3:
+                        continue
+
+                    price_text = price_el.get_text(strip=True)
+                    price = self._parse_price(price_text)
+                    if price <= 0:
+                        continue
+
+                    url_path = link_el.get('href', '') if link_el else ''
+                    if url_path.startswith('/'):
+                        full_url = f"{BASE_URL}{url_path}"
+                    elif url_path.startswith('http'):
+                        full_url = url_path
                     else:
-                        price = float(price_data) / 100 if price_data > 10000 else float(price_data)
+                        full_url = BASE_URL
 
-                    product_id = item.get("id") or item.get("productId", "")
-                    url = f"https://uzum.uz/product/{product_id}" if product_id else "https://uzum.uz"
-
-                    photos = item.get("photos") or []
+                    img_el = card.select_one('img')
                     image_url = None
-                    if photos and isinstance(photos, list):
-                        first = photos[0]
-                        if isinstance(first, dict):
-                            image_url = first.get("photoUrl") or first.get("url")
-                        else:
-                            image_url = str(first)
+                    if img_el:
+                        image_url = img_el.get('data-src') or img_el.get('src')
+                        if image_url and not image_url.startswith('http'):
+                            image_url = BASE_URL + image_url
 
-                    if price > 0:
-                        results.append(self._make_result(name, price, url, image_url))
+                    results.append(self._make_result(name, price, full_url, image_url))
                 except Exception as e:
-                    logger.debug(f"Uzum: error parsing item: {e}")
+                    logger.debug(f"Uzum: error parsing card: {e}")
                     continue
+
             return results
         except Exception as e:
             logger.error(f"Uzum search error: {e}")

@@ -1,4 +1,5 @@
 import logging
+import re
 from dataclasses import dataclass
 from typing import Optional, List, Union
 from urllib.parse import quote
@@ -8,7 +9,7 @@ from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_TIMEOUT = aiohttp.ClientTimeout(total=20)
+DEFAULT_TIMEOUT = aiohttp.ClientTimeout(total=60)
 
 
 @dataclass
@@ -44,7 +45,7 @@ class BaseScraper:
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/121.0.0.0 Safari/537.36"
             ),
-            "Accept": "application/json, text/html, */*",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "uz-UZ,uz;q=0.9,ru;q=0.8,en;q=0.7",
             "Accept-Encoding": "gzip, deflate, br",
         }
@@ -52,10 +53,11 @@ class BaseScraper:
     async def search(self, query: str) -> List[ProductResult]:
         raise NotImplementedError
 
-    def _build_url(self, target_url: str, scraperapi_key: str) -> str:
+    def _build_url(self, target_url: str, scraperapi_key: str, render: bool = True) -> str:
         """Wrap URL with ScraperAPI proxy if key is provided."""
         if scraperapi_key:
-            return f"http://api.scraperapi.com?api_key={scraperapi_key}&url={quote(target_url, safe='')}"
+            render_param = "&render=true" if render else ""
+            return f"http://api.scraperapi.com?api_key={scraperapi_key}{render_param}&url={quote(target_url, safe='')}"
         return target_url
 
     async def _get(
@@ -64,6 +66,7 @@ class BaseScraper:
         params: Optional[dict] = None,
         extra_headers: Optional[dict] = None,
         scraperapi_key: str = "",
+        render: bool = True,
     ) -> Optional[Union[dict, str]]:
         from bot.config import SCRAPERAPI_KEY
         key = scraperapi_key or SCRAPERAPI_KEY
@@ -76,10 +79,10 @@ class BaseScraper:
         if key and params:
             import urllib.parse
             full_url = url + ("?" if "?" not in url else "&") + urllib.parse.urlencode(params)
-            request_url = self._build_url(full_url, key)
+            request_url = self._build_url(full_url, key, render=render)
             request_params = None
         elif key:
-            request_url = self._build_url(url, key)
+            request_url = self._build_url(url, key, render=render)
             request_params = None
         else:
             request_url = url
@@ -104,11 +107,25 @@ class BaseScraper:
             logger.error(f"{self.MARKETPLACE_KEY}: unexpected error: {e}")
             return None
 
-    async def _get_soup(self, url: str, params: Optional[dict] = None) -> Optional[BeautifulSoup]:
-        html = await self._get(url, params=params)
+    async def _get_soup(
+        self,
+        url: str,
+        params: Optional[dict] = None,
+        render: bool = True,
+    ) -> Optional[BeautifulSoup]:
+        html = await self._get(url, params=params, render=render)
         if isinstance(html, str):
             return BeautifulSoup(html, "lxml")
         return None
+
+    def _parse_price(self, text: str) -> float:
+        """Extract a numeric price from a text string."""
+        nums = re.findall(r'[\d\s]+', text)
+        for n in nums:
+            cleaned = n.replace(' ', '').replace('\xa0', '')
+            if cleaned.isdigit() and int(cleaned) > 100:
+                return float(cleaned)
+        return 0.0
 
     def format_price(self, price: float, currency: Optional[str] = None) -> str:
         cur = currency or self.CURRENCY

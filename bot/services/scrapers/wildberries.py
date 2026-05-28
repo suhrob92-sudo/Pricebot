@@ -43,7 +43,7 @@ class WildberriesScraper(BaseScraper):
             "spp": "0",
         }
         try:
-            data = await self._get(SEARCH_API_URL, params=params)
+            data = await self._get(SEARCH_API_URL, params=params, render=False)
             if not isinstance(data, dict):
                 return []
 
