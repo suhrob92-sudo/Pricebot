@@ -1,6 +1,5 @@
-from typing import List, Dict, Any, Optional
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.utils.keyboard import InlineKeyboardBuilder
+from typing import List, Dict, Any
+from telegram import InlineKeyboardMarkup, InlineKeyboardButton
 
 ITEMS_PER_PAGE = 5
 
@@ -15,57 +14,39 @@ def get_text(key: str, language: str) -> str:
 def get_search_results_keyboard(
     products: List[Dict[str, Any]], user_language: str = "uz"
 ) -> InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
+    rows = []
     for i, product in enumerate(products[:10]):
         product_id = product.get("id", i)
         name = product.get("name", "Unknown")[:30]
         marketplace = product.get("marketplace", "")
-        builder.row(
-            InlineKeyboardButton(
-                text=f"📦 {name} ({marketplace})",
-                callback_data=f"product:view:{product_id}",
-            )
-        )
-    builder.row(
-        InlineKeyboardButton(
-            text=get_text("btn_back", user_language), callback_data="menu:main"
-        )
-    )
-    return builder.as_markup()
+        rows.append([InlineKeyboardButton(
+            f"📦 {name} ({marketplace})",
+            callback_data=f"product:view:{product_id}",
+        )])
+    rows.append([InlineKeyboardButton(
+        get_text("btn_back", user_language), callback_data="menu:main"
+    )])
+    return InlineKeyboardMarkup(rows)
 
 
 def get_product_actions_keyboard(
     product_id: int, language: str = "uz"
 ) -> InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
-    builder.row(
-        InlineKeyboardButton(
-            text=get_text("btn_add_track", language),
-            callback_data=f"track:add:{product_id}",
-        ),
-        InlineKeyboardButton(
-            text=get_text("btn_add_wish", language),
-            callback_data=f"wish:add:{product_id}",
-        ),
-    )
-    builder.row(
-        InlineKeyboardButton(
-            text=get_text("btn_history", language),
-            callback_data=f"history:show:{product_id}",
-        ),
-    )
-    builder.row(
-        InlineKeyboardButton(
-            text=get_text("btn_back", language), callback_data="menu:search"
-        )
-    )
-    return builder.as_markup()
+    rows = [
+        [
+            InlineKeyboardButton(get_text("btn_add_track", language), callback_data=f"track:add:{product_id}"),
+            InlineKeyboardButton(get_text("btn_add_wish", language), callback_data=f"wish:add:{product_id}"),
+        ],
+        [InlineKeyboardButton(get_text("btn_history", language), callback_data=f"history:show:{product_id}")],
+        [InlineKeyboardButton(get_text("btn_back", language), callback_data="menu:search")],
+    ]
+    return InlineKeyboardMarkup(rows)
 
 
 def get_tracking_list_keyboard(
     tracked_items: List[Dict[str, Any]], language: str = "uz", page: int = 0
 ) -> InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
+    rows = []
     start = page * ITEMS_PER_PAGE
     end = start + ITEMS_PER_PAGE
     page_items = tracked_items[start:end]
@@ -73,44 +54,34 @@ def get_tracking_list_keyboard(
     for item in page_items:
         tracking_id = item.get("tracking_id", 0)
         name = item.get("name", "Unknown")[:25]
-        builder.row(
-            InlineKeyboardButton(
-                text=f"🗑 {name}",
-                callback_data=f"track:remove:{tracking_id}",
-            )
-        )
+        rows.append([InlineKeyboardButton(
+            f"🗑 {name}",
+            callback_data=f"track:remove:{tracking_id}",
+        )])
 
     nav_buttons = []
     total_pages = (len(tracked_items) + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE
     if page > 0:
-        nav_buttons.append(
-            InlineKeyboardButton(
-                text=get_text("btn_prev", language),
-                callback_data=f"track:page:{page - 1}",
-            )
-        )
+        nav_buttons.append(InlineKeyboardButton(
+            get_text("btn_prev", language),
+            callback_data=f"track:page:{page - 1}",
+        ))
     if page < total_pages - 1:
-        nav_buttons.append(
-            InlineKeyboardButton(
-                text=get_text("btn_next", language),
-                callback_data=f"track:page:{page + 1}",
-            )
-        )
+        nav_buttons.append(InlineKeyboardButton(
+            get_text("btn_next", language),
+            callback_data=f"track:page:{page + 1}",
+        ))
     if nav_buttons:
-        builder.row(*nav_buttons)
+        rows.append(nav_buttons)
 
-    builder.row(
-        InlineKeyboardButton(
-            text=get_text("btn_back", language), callback_data="menu:main"
-        )
-    )
-    return builder.as_markup()
+    rows.append([InlineKeyboardButton(get_text("btn_back", language), callback_data="menu:main")])
+    return InlineKeyboardMarkup(rows)
 
 
 def get_wishlist_keyboard(
     items: List[Dict[str, Any]], language: str = "uz", page: int = 0
 ) -> InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
+    rows = []
     start = page * ITEMS_PER_PAGE
     end = start + ITEMS_PER_PAGE
     page_items = items[start:end]
@@ -118,77 +89,44 @@ def get_wishlist_keyboard(
     for item in page_items:
         wish_id = item.get("id", 0)
         name = item.get("product_name", "Unknown")[:25]
-        builder.row(
-            InlineKeyboardButton(
-                text=f"🗑 {name}",
-                callback_data=f"wish:remove:{wish_id}",
-            )
-        )
+        rows.append([InlineKeyboardButton(
+            f"🗑 {name}",
+            callback_data=f"wish:remove:{wish_id}",
+        )])
 
     nav_buttons = []
     total_pages = (len(items) + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE
     if page > 0:
-        nav_buttons.append(
-            InlineKeyboardButton(
-                text=get_text("btn_prev", language),
-                callback_data=f"wish:page:{page - 1}",
-            )
-        )
+        nav_buttons.append(InlineKeyboardButton(
+            get_text("btn_prev", language),
+            callback_data=f"wish:page:{page - 1}",
+        ))
     if page < total_pages - 1:
-        nav_buttons.append(
-            InlineKeyboardButton(
-                text=get_text("btn_next", language),
-                callback_data=f"wish:page:{page + 1}",
-            )
-        )
+        nav_buttons.append(InlineKeyboardButton(
+            get_text("btn_next", language),
+            callback_data=f"wish:page:{page + 1}",
+        ))
     if nav_buttons:
-        builder.row(*nav_buttons)
+        rows.append(nav_buttons)
 
-    builder.row(
-        InlineKeyboardButton(
-            text=get_text("btn_back", language), callback_data="menu:main"
-        )
-    )
-    return builder.as_markup()
+    rows.append([InlineKeyboardButton(get_text("btn_back", language), callback_data="menu:main")])
+    return InlineKeyboardMarkup(rows)
 
 
 def get_deals_keyboard(
     deals: List[Dict[str, Any]], language: str = "uz"
 ) -> InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
+    rows = []
     for deal in deals[:5]:
         product_id = deal.get("id", 0)
         name = deal.get("name", "Unknown")[:25]
         discount = deal.get("discount", 0)
-        builder.row(
-            InlineKeyboardButton(
-                text=f"🔥 {name} (-{discount}%)",
-                callback_data=f"product:view:{product_id}",
-            )
-        )
-    builder.row(
-        InlineKeyboardButton(
-            text=get_text("btn_back", language), callback_data="menu:main"
-        )
-    )
-    return builder.as_markup()
-
-
-def get_confirmation_keyboard(
-    action: str, item_id: int, language: str = "uz"
-) -> InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
-    builder.row(
-        InlineKeyboardButton(
-            text=get_text("btn_confirm", language),
-            callback_data=f"confirm:{action}:{item_id}",
-        ),
-        InlineKeyboardButton(
-            text=get_text("btn_cancel", language),
-            callback_data="menu:main",
-        ),
-    )
-    return builder.as_markup()
+        rows.append([InlineKeyboardButton(
+            f"🔥 {name} (-{discount}%)",
+            callback_data=f"product:view:{product_id}",
+        )])
+    rows.append([InlineKeyboardButton(get_text("btn_back", language), callback_data="menu:main")])
+    return InlineKeyboardMarkup(rows)
 
 
 def get_results_navigation_keyboard(
@@ -197,7 +135,7 @@ def get_results_navigation_keyboard(
     page: int = 0,
     query: str = "",
 ) -> InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
+    rows = []
     start = page * ITEMS_PER_PAGE
     end = start + ITEMS_PER_PAGE
     page_items = results[start:end]
@@ -205,35 +143,25 @@ def get_results_navigation_keyboard(
     for item in page_items:
         product_id = item.get("id", 0)
         name = item.get("name", "Unknown")[:28]
-        builder.row(
-            InlineKeyboardButton(
-                text=f"📦 {name}",
-                callback_data=f"product:view:{product_id}",
-            )
-        )
+        rows.append([InlineKeyboardButton(
+            f"📦 {name}",
+            callback_data=f"product:view:{product_id}",
+        )])
 
     nav_buttons = []
     total_pages = (len(results) + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE
     if page > 0:
-        nav_buttons.append(
-            InlineKeyboardButton(
-                text=get_text("btn_prev", language),
-                callback_data=f"search:page:{page - 1}",
-            )
-        )
+        nav_buttons.append(InlineKeyboardButton(
+            get_text("btn_prev", language),
+            callback_data=f"search:page:{page - 1}",
+        ))
     if page < total_pages - 1:
-        nav_buttons.append(
-            InlineKeyboardButton(
-                text=get_text("btn_next", language),
-                callback_data=f"search:page:{page + 1}",
-            )
-        )
+        nav_buttons.append(InlineKeyboardButton(
+            get_text("btn_next", language),
+            callback_data=f"search:page:{page + 1}",
+        ))
     if nav_buttons:
-        builder.row(*nav_buttons)
+        rows.append(nav_buttons)
 
-    builder.row(
-        InlineKeyboardButton(
-            text=get_text("btn_back", language), callback_data="menu:main"
-        )
-    )
-    return builder.as_markup()
+    rows.append([InlineKeyboardButton(get_text("btn_back", language), callback_data="menu:main")])
+    return InlineKeyboardMarkup(rows)
