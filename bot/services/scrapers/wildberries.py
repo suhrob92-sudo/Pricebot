@@ -1,6 +1,7 @@
 import logging
 from typing import List
-from urllib.parse import quote
+
+import aiohttp
 
 from bot.services.scrapers.base import BaseScraper, ProductResult
 
@@ -16,16 +17,9 @@ class WildberriesScraper(BaseScraper):
     MARKETPLACE_EMOJI = "🩷"
     CURRENCY = "RUB"
 
-    def __init__(self):
-        super().__init__()
-        self.headers.update({
-            "Accept": "application/json",
-            "Accept-Language": "ru-RU,ru;q=0.9",
-            "Origin": "https://www.wildberries.ru",
-            "Referer": "https://www.wildberries.ru/",
-        })
-
     async def search(self, query: str) -> List[ProductResult]:
+        # WB has a public JSON API — direct request, NO ScraperAPI.
+        # ScraperAPI strips required Origin/Referer headers → empty response.
         params = {
             "query": query,
             "resultset": "catalog",
@@ -38,26 +32,38 @@ class WildberriesScraper(BaseScraper):
             "locale": "ru",
             "spp": "27",
         }
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Accept": "application/json",
+            "Accept-Language": "ru-RU,ru;q=0.9",
+            "Origin": "https://www.wildberries.ru",
+            "Referer": "https://www.wildberries.ru/",
+        }
         try:
-            data = await self._get(SEARCH_URL, params=params, render=False)
-            if not isinstance(data, dict):
-                logger.warning("WB: non-dict response")
-                return []
-            products = (data.get("data", {}).get("products", []) or
-                        data.get("catalog", {}).get("products", []) or [])
+            timeout = aiohttp.ClientTimeout(total=20)
+            async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
+                async with session.get(SEARCH_URL, params=params) as resp:
+                    if resp.status != 200:
+                        logger.warning(f"WB: HTTP {resp.status}")
+                        return []
+                    data = await resp.json(content_type=None)
+
+            products = (
+                data.get("data", {}).get("products", [])
+                or data.get("catalog", {}).get("products", [])
+                or []
+            )
             results = []
             for item in products[:10]:
                 try:
                     name = item.get("name") or "Unknown"
                     price = 0.0
-                    # Try sizes first
                     for size in (item.get("sizes") or []):
                         p = size.get("price") or {}
                         total = p.get("total") or p.get("product") or 0
                         if total:
                             price = float(total) / 100
                             break
-                    # Fallback prices
                     if price <= 0:
                         for key in ("salePriceU", "priceU", "sale_price_u"):
                             raw = item.get(key)
@@ -71,7 +77,7 @@ class WildberriesScraper(BaseScraper):
                     image_url = self._wb_image(pid)
                     results.append(self._make_result(name, price, url, image_url))
                 except Exception as e:
-                    logger.debug(f"WB item parse error: {e}")
+                    logger.debug(f"WB item: {e}")
                     continue
             return results
         except Exception as e:

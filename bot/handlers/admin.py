@@ -252,12 +252,12 @@ async def cmd_diagnose(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     )
 
     sites = [
-        ("🟠 Uzum", "https://uzum.uz/search?keyword=iphone"),
-        ("🔴 Olcha", "https://olcha.uz/search/iphone"),
-        ("🔵 Texnomart", "https://texnomart.uz/search?query=iphone"),
-        ("🟢 Mediapark", "https://mediapark.uz/search?q=iphone"),
-        ("🩷 WB", "https://search.wb.ru/exactmatch/ru/common/v5/search?query=iphone&resultset=catalog&limit=5&sort=popular&page=1&appType=1&curr=rub&lang=ru&locale=ru&spp=27"),
-        ("🟣 Ozon", "https://www.ozon.ru/search/?text=iphone&from_global=true"),
+        ("🟠 Uzum API", "https://api.uzum.uz/api/main/search/product?keyword=iphone&size=5&page=0&sortField=RELEVANCE&sortDirection=DESC", True),
+        ("🔴 Olcha", "https://olcha.uz/search/iphone", False),
+        ("🔵 Texnomart", "https://texnomart.uz/search?q=iphone", False),
+        ("🟢 Mediapark", "https://mediapark.uz/search?q=iphone", False),
+        ("🩷 WB", "https://search.wb.ru/exactmatch/ru/common/v5/search?query=iphone&resultset=catalog&limit=5&sort=popular&page=1&appType=1&curr=rub&lang=ru&locale=ru&spp=27", True),
+        ("🟣 Ozon", "https://www.ozon.ru/search/?text=iphone&from_global=true", False),
     ]
 
     req_headers = {
@@ -267,46 +267,50 @@ async def cmd_diagnose(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     }
     done: list[str] = []
 
-    for name, url in sites:
-        proxy_url = (
-            f"http://api.scraperapi.com?api_key={SCRAPERAPI_KEY}&url={_quote(url, safe='')}"
-            if SCRAPERAPI_KEY else url
-        )
+    for name, url, is_direct in sites:
+        # WB and Uzum API: direct (no ScraperAPI). Others: via ScraperAPI.
+        if is_direct or not SCRAPERAPI_KEY:
+            proxy_url = url
+        else:
+            proxy_url = f"http://api.scraperapi.com?api_key={SCRAPERAPI_KEY}&url={_quote(url, safe='')}"
+
         try:
             timeout = aiohttp.ClientTimeout(total=20)
             async with aiohttp.ClientSession(headers=req_headers) as session:
                 async with session.get(proxy_url, timeout=timeout) as resp:
                     http_status = resp.status
-                    # Read at most 200KB to avoid memory issues
                     raw_bytes = await resp.content.read(200 * 1024)
                     raw = raw_bytes.decode("utf-8", errors="replace")
                     size_kb = len(raw) // 1024
 
-                    if "wb.ru" in url:
+                    # JSON API (WB, Uzum API)
+                    ct = resp.content_type or ""
+                    if "json" in ct or raw.lstrip().startswith("{"):
                         try:
                             d = _json.loads(raw)
-                            prods = (d.get("data", {}).get("products") or
-                                     d.get("catalog", {}).get("products") or [])
-                            line = f"{name}: {http_status} | {size_kb}KB | {len(prods)} mahsulot"
+                            # WB
+                            prods = (d.get("data", {}).get("products")
+                                     or d.get("catalog", {}).get("products")
+                                     or d.get("payload", {}).get("products")
+                                     or d.get("products") or [])
+                            line = f"{name}: {http_status} | {size_kb}KB | JSON {len(prods)} items"
                         except Exception:
-                            line = f"{name}: {http_status} | {size_kb}KB | JSON xato"
+                            line = f"{name}: {http_status} | {size_kb}KB | JSON parse err"
                     elif "__NEXT_DATA__" in raw:
-                        # Simple key extraction — no regex, just string split
                         start = raw.find('"pageProps":{') + len('"pageProps":')
                         if start > len('"pageProps":'):
-                            chunk = raw[start:start + 300]
-                            # grab first few key names
                             import re as _re
-                            keys = _re.findall(r'"(\w+)":', chunk)[:6]
-                            line = f"{name}: {http_status} | {size_kb}KB | NEXT✅ | keys={keys}"
+                            keys = _re.findall(r'"(\w+)":', raw[start:start + 300])[:6]
+                            line = f"{name}: {http_status} | {size_kb}KB | NEXT✅ keys={keys}"
                         else:
-                            line = f"{name}: {http_status} | {size_kb}KB | NEXT✅ (no pageProps)"
+                            line = f"{name}: {http_status} | {size_kb}KB | NEXT✅"
                     else:
-                        # Show page title or first 60 chars
-                        t_start = raw.find("<title>")
-                        t_end = raw.find("</title>")
-                        title = raw[t_start + 7:t_end][:50] if t_start >= 0 else raw[:60]
-                        line = f"{name}: {http_status} | {size_kb}KB | NO NEXT | {title}"
+                        # Show title + first class names found in body
+                        t_s = raw.find("<title>"); t_e = raw.find("</title>")
+                        title = raw[t_s + 7:t_e][:40] if t_s >= 0 else ""
+                        import re as _re
+                        classes = _re.findall(r'class="([^"]{5,40})"', raw)[:4]
+                        line = f"{name}: {http_status} | {size_kb}KB | {title} | cls={classes}"
             done.append(line)
         except asyncio.TimeoutError:
             done.append(f"{name}: ⏱ Timeout 20s")

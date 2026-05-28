@@ -1,7 +1,10 @@
-import json
 import logging
+import re
 from typing import List
 from urllib.parse import quote
+
+import aiohttp
+from bs4 import BeautifulSoup
 
 from bot.services.scrapers.base import BaseScraper, ProductResult
 
@@ -16,95 +19,106 @@ class OlchaScraper(BaseScraper):
     MARKETPLACE_EMOJI = "🔴"
     CURRENCY = "UZS"
 
+    def __init__(self):
+        super().__init__()
+        self.headers.update({
+            "Accept": "text/html,application/xhtml+xml,*/*",
+            "Accept-Language": "uz-UZ,uz;q=0.9,ru;q=0.8",
+        })
+
     async def search(self, query: str) -> List[ProductResult]:
         url = f"{BASE_URL}/search/{quote(query)}"
+        from bot.config import SCRAPERAPI_KEY
+        html = await self._fetch_html(url, SCRAPERAPI_KEY)
+        if not html:
+            return []
+        return self._parse_html(html)
+
+    async def _fetch_html(self, url: str, scraperapi_key: str) -> str | None:
+        from urllib.parse import quote as q
+        if scraperapi_key:
+            proxy = f"http://api.scraperapi.com?api_key={scraperapi_key}&url={q(url, safe='')}"
+        else:
+            proxy = url
         try:
-            html = await self._get(url, render=False)
-            if not isinstance(html, str):
-                return []
-            from bs4 import BeautifulSoup
-            soup = BeautifulSoup(html, "lxml")
-            script = soup.find("script", {"id": "__NEXT_DATA__"})
-            if script and script.string:
-                try:
-                    data = json.loads(script.string)
-                    results = self._find_products(data)
-                    if results:
-                        return results
-                except Exception as e:
-                    logger.debug(f"Olcha __NEXT_DATA__ error: {e}")
-            # HTML fallback
-            results = []
-            cards = (soup.select(".product-card") or
-                     soup.select("[class*='product-card']") or
-                     soup.select("article"))
-            for card in cards[:10]:
-                name_el = card.select_one("[class*='name'], [class*='title'], h3, h2")
-                price_el = card.select_one("[class*='price'], [class*='cost']")
-                if not name_el or not price_el:
+            timeout = aiohttp.ClientTimeout(total=25)
+            async with aiohttp.ClientSession(headers=self.headers, timeout=timeout) as session:
+                async with session.get(proxy) as resp:
+                    if resp.status != 200:
+                        logger.warning(f"Olcha: HTTP {resp.status}")
+                        return None
+                    return await resp.text(errors="replace")
+        except Exception as e:
+            logger.debug(f"Olcha fetch: {e}")
+            return None
+
+    def _parse_html(self, html: str) -> List[ProductResult]:
+        soup = BeautifulSoup(html, "lxml")
+        results = []
+
+        # Olcha.uz HTML selectors — site is custom-built, not Next.js
+        selectors = [
+            "div.product-card",
+            "div.product-item",
+            "div.catalog-product",
+            "li.product-card",
+            "li.product-item",
+            "[class*='product-card']",
+            "[class*='product-item']",
+            "[class*='catalog-item']",
+            "article",
+        ]
+        cards = []
+        for sel in selectors:
+            found = soup.select(sel)
+            if found:
+                cards = found[:10]
+                break
+
+        for card in cards:
+            try:
+                name_el = card.select_one(
+                    "h2, h3, h4, "
+                    "[class*='title'], [class*='name'], "
+                    "[itemprop='name'], a[title]"
+                )
+                price_el = card.select_one(
+                    "[class*='price']:not([class*='old']):not([class*='cross']), "
+                    "[itemprop='price'], [class*='cost'], [class*='sum']"
+                )
+                if not name_el:
                     continue
-                name = name_el.get_text(strip=True)
-                price = self._parse_price(price_el.get_text(strip=True))
-                if len(name) < 3 or price <= 0:
+                name = (name_el.get("title") or name_el.get_text(strip=True)).strip()
+                if len(name) < 3:
+                    continue
+                price = 0.0
+                if price_el:
+                    price_text = price_el.get("content") or price_el.get_text(strip=True)
+                    price = self._parse_price(price_text)
+                if price <= 0:
+                    nums = re.findall(r'\d[\d\s]{3,}', card.get_text())
+                    for n in nums:
+                        v = int(re.sub(r'\s', '', n))
+                        if v > 1000:
+                            price = float(v)
+                            break
+                if price <= 0:
                     continue
                 link_el = card.select_one("a[href]")
                 href = link_el.get("href", "") if link_el else ""
                 product_url = href if href.startswith("http") else BASE_URL + href
-                results.append(self._make_result(name, price, product_url))
-            return results
-        except Exception as e:
-            logger.error(f"Olcha error: {e}")
-            return []
+                image_el = card.select_one("img[src], img[data-src], img[data-lazy-src]")
+                img = None
+                if image_el:
+                    img = (image_el.get("src") or image_el.get("data-src")
+                           or image_el.get("data-lazy-src"))
+                    if img and img.startswith("/"):
+                        img = BASE_URL + img
+                results.append(self._make_result(name, price, product_url, img))
+            except Exception:
+                continue
 
-    def _find_products(self, node, depth=0) -> List[ProductResult]:
-        if depth > 10:
-            return []
-        if isinstance(node, dict):
-            for key in ("products", "items", "data", "results", "goods"):
-                val = node.get(key)
-                if isinstance(val, list) and val:
-                    results = [r for item in val[:10] if (r := self._parse_item(item))]
-                    if results:
-                        return results
-            for v in node.values():
-                if isinstance(v, (dict, list)):
-                    r = self._find_products(v, depth + 1)
-                    if r:
-                        return r
-        elif isinstance(node, list):
-            results = [r for item in node[:10] if (r := self._parse_item(item))]
-            if results:
-                return results
-        return []
+        if not results:
+            logger.debug(f"Olcha: 0 cards from {len(html)}-byte page")
 
-    def _parse_item(self, item) -> ProductResult | None:
-        if not isinstance(item, dict):
-            return None
-        try:
-            name = (item.get("name") or item.get("title") or item.get("product_name") or "").strip()
-            if len(name) < 3:
-                return None
-            price = 0.0
-            for key in ("price", "sell_price", "current_price", "cost"):
-                raw = item.get(key)
-                if raw is None:
-                    continue
-                if isinstance(raw, dict):
-                    raw = raw.get("amount") or raw.get("value") or 0
-                try:
-                    val = float(str(raw).replace(" ", "").replace(",", "."))
-                    if val > 0:
-                        price = val
-                        break
-                except (TypeError, ValueError):
-                    continue
-            if price <= 0:
-                return None
-            slug = item.get("slug") or item.get("id") or ""
-            url = f"{BASE_URL}/product/{slug}" if slug else BASE_URL
-            image_url = item.get("image") or item.get("photo") or None
-            if isinstance(image_url, dict):
-                image_url = image_url.get("url") or image_url.get("src")
-            return self._make_result(name, price, url, image_url)
-        except Exception:
-            return None
+        return results

@@ -3,11 +3,14 @@ import logging
 from typing import List
 from urllib.parse import quote
 
+import aiohttp
+
 from bot.services.scrapers.base import BaseScraper, ProductResult
 
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://uzum.uz"
+API_URL = "https://api.uzum.uz/api/main/search/product"
 
 
 class UzumScraper(BaseScraper):
@@ -17,62 +20,63 @@ class UzumScraper(BaseScraper):
     CURRENCY = "UZS"
 
     async def search(self, query: str) -> List[ProductResult]:
-        url = f"{BASE_URL}/search?keyword={quote(query)}"
+        # Uzum is a SPA — scraping HTML gives bot-detection page.
+        # Use their internal search API directly (no ScraperAPI needed).
+        params = {
+            "keyword": query,
+            "size": "20",
+            "page": "0",
+            "sortField": "RELEVANCE",
+            "sortDirection": "DESC",
+            "showAdultContent": "FALSE",
+        }
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "uz-UZ,uz;q=0.9,ru;q=0.8",
+            "Origin": "https://uzum.uz",
+            "Referer": "https://uzum.uz/",
+        }
         try:
-            html = await self._get(url, render=False)
-            if not isinstance(html, str):
-                return []
-            from bs4 import BeautifulSoup
-            soup = BeautifulSoup(html, "lxml")
-            script = soup.find("script", {"id": "__NEXT_DATA__"})
-            if script and script.string:
-                try:
-                    data = json.loads(script.string)
-                    results = self._find_products(data)
-                    if results:
-                        return results
-                except Exception as e:
-                    logger.debug(f"Uzum __NEXT_DATA__ error: {e}")
-            logger.warning("Uzum: no products found")
-            return []
+            timeout = aiohttp.ClientTimeout(total=20)
+            async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
+                async with session.get(API_URL, params=params) as resp:
+                    if resp.status != 200:
+                        logger.warning(f"Uzum API: HTTP {resp.status}")
+                        return []
+                    data = await resp.json(content_type=None)
+
+            products = (
+                data.get("payload", {}).get("products")
+                or data.get("products")
+                or data.get("data", {}).get("products")
+                or []
+            )
+            if not products and isinstance(data, dict):
+                products = self._deep_find_list(data, ("products", "items", "goods"))
+
+            results = []
+            for item in products[:10]:
+                r = self._parse_item(item)
+                if r:
+                    results.append(r)
+            return results
         except Exception as e:
             logger.error(f"Uzum error: {e}")
             return []
 
-    def _find_products(self, node, depth=0) -> List[ProductResult]:
-        if depth > 10:
+    def _deep_find_list(self, node, keys, depth=0):
+        if depth > 8 or not isinstance(node, dict):
             return []
-        results = []
-        if isinstance(node, dict):
-            for key in ("products", "productList", "items", "goods", "catalog"):
-                val = node.get(key)
-                if isinstance(val, list) and len(val) > 0:
-                    for item in val[:10]:
-                        r = self._parse_item(item)
-                        if r:
-                            results.append(r)
-                    if results:
-                        return results
-                elif isinstance(val, dict):
-                    sub = val.get("products") or val.get("items") or []
-                    for item in sub[:10]:
-                        r = self._parse_item(item)
-                        if r:
-                            results.append(r)
-                    if results:
-                        return results
-            for v in node.values():
-                if isinstance(v, (dict, list)):
-                    r = self._find_products(v, depth + 1)
-                    if r:
-                        return r
-        elif isinstance(node, list):
-            for item in node[:10]:
-                r = self._parse_item(item)
+        for k in keys:
+            v = node.get(k)
+            if isinstance(v, list) and v:
+                return v
+        for v in node.values():
+            if isinstance(v, dict):
+                r = self._deep_find_list(v, keys, depth + 1)
                 if r:
-                    results.append(r)
-            if results:
-                return results
+                    return r
         return []
 
     def _parse_item(self, item) -> ProductResult | None:
@@ -83,7 +87,7 @@ class UzumScraper(BaseScraper):
             if len(name) < 3:
                 return None
             price = 0.0
-            for key in ("minSellPrice", "price", "sellPrice", "cost"):
+            for key in ("minSellPrice", "price", "sellPrice", "cost", "minPrice"):
                 raw = item.get(key)
                 if raw is None:
                     continue
@@ -101,7 +105,10 @@ class UzumScraper(BaseScraper):
             if price <= 0:
                 return None
             pid = item.get("id") or item.get("productId") or ""
-            url = f"{BASE_URL}/product/{pid}" if pid else BASE_URL
+            slug = item.get("slug") or ""
+            url = f"{BASE_URL}/product/{slug}-{pid}" if slug else (
+                f"{BASE_URL}/product/{pid}" if pid else BASE_URL
+            )
             photos = item.get("photos") or item.get("images") or []
             image_url = None
             if photos:
