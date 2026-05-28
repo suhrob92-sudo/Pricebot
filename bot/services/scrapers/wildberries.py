@@ -1,5 +1,6 @@
 import logging
 from typing import List
+from urllib.parse import quote
 
 import aiohttp
 
@@ -18,8 +19,7 @@ class WildberriesScraper(BaseScraper):
     CURRENCY = "RUB"
 
     async def search(self, query: str) -> List[ProductResult]:
-        # WB has a public JSON API — direct request, NO ScraperAPI.
-        # ScraperAPI strips required Origin/Referer headers → empty response.
+        from bot.config import SCRAPERAPI_KEY
         params = {
             "query": query,
             "resultset": "catalog",
@@ -32,17 +32,40 @@ class WildberriesScraper(BaseScraper):
             "locale": "ru",
             "spp": "27",
         }
-        headers = {
+        wb_headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             "Accept": "application/json",
             "Accept-Language": "ru-RU,ru;q=0.9",
             "Origin": "https://www.wildberries.ru",
             "Referer": "https://www.wildberries.ru/",
         }
+
+        # Build query string manually to preserve WB-specific params
+        import urllib.parse
+        qs = urllib.parse.urlencode(params)
+        full_url = f"{SEARCH_URL}?{qs}"
+
+        # Use ScraperAPI premium to bypass WB rate limiting (429)
+        # premium=true uses residential IPs — costs 10 credits but bypasses blocks
+        if SCRAPERAPI_KEY:
+            request_url = (
+                f"http://api.scraperapi.com"
+                f"?api_key={SCRAPERAPI_KEY}"
+                f"&premium=true"
+                f"&url={quote(full_url, safe='')}"
+            )
+            req_headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Accept": "application/json",
+            }
+        else:
+            request_url = full_url
+            req_headers = wb_headers
+
         try:
-            timeout = aiohttp.ClientTimeout(total=20)
-            async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
-                async with session.get(SEARCH_URL, params=params) as resp:
+            timeout = aiohttp.ClientTimeout(total=30)
+            async with aiohttp.ClientSession(headers=req_headers, timeout=timeout) as session:
+                async with session.get(request_url) as resp:
                     if resp.status != 200:
                         logger.warning(f"WB: HTTP {resp.status}")
                         return []
@@ -74,8 +97,7 @@ class WildberriesScraper(BaseScraper):
                         continue
                     pid = item.get("id", "")
                     url = f"{PRODUCT_BASE}/{pid}/detail.aspx" if pid else "https://www.wildberries.ru"
-                    image_url = self._wb_image(pid)
-                    results.append(self._make_result(name, price, url, image_url))
+                    results.append(self._make_result(name, price, url, self._wb_image(pid)))
                 except Exception as e:
                     logger.debug(f"WB item: {e}")
                     continue

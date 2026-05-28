@@ -9,7 +9,7 @@ from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_TIMEOUT = aiohttp.ClientTimeout(total=60)
+DEFAULT_TIMEOUT = aiohttp.ClientTimeout(total=90)
 
 
 @dataclass

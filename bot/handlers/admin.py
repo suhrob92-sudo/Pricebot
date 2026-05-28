@@ -223,7 +223,7 @@ async def cmd_debug(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     for scraper in comp.scrapers:
         try:
-            results = await asyncio.wait_for(scraper.search("iphone"), timeout=45)
+            results = await asyncio.wait_for(scraper.search("iphone"), timeout=100)
             status = f"✅ {len(results)} natija"
             if results:
                 status += f" | {results[0].name[:25]}... {results[0].price:,.0f}"
