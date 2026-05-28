@@ -9,6 +9,7 @@ ADMIN_IDS: List[int] = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if
 ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
 CHANNEL_ID: str = os.getenv("CHANNEL_ID", "")
 DATABASE_PATH: str = os.getenv("DATABASE_PATH", "data/pricebot.db")
+PORT: int = int(os.getenv("PORT", "8080"))
 
 SUPPORTED_LANGUAGES = ["uz", "ru"]
 DEFAULT_LANGUAGE = "uz"

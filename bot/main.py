@@ -1,17 +1,17 @@
 import asyncio
 import logging
-import os
 
 from aiogram import Bot, Dispatcher
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from bot.config import BOT_TOKEN, ADMIN_IDS
+from bot.config import BOT_TOKEN, ADMIN_IDS, PORT
 from bot.database.db import DatabaseManager
 from bot.middlewares.language import LanguageMiddleware
 from bot.services.tracker import PriceTracker
 from bot.services.deals_service import DealsService
+from bot.health_server import start_health_server
 
 logging.basicConfig(
     level=logging.INFO,
@@ -35,6 +35,9 @@ async def main() -> None:
     if not BOT_TOKEN:
         logger.error("BOT_TOKEN is not set! Please configure .env file.")
         return
+
+    # Start health check HTTP server (keeps Render free tier awake via UptimeRobot)
+    health_runner = await start_health_server(PORT)
 
     bot = Bot(
         token=BOT_TOKEN,
@@ -86,6 +89,7 @@ async def main() -> None:
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
         scheduler.shutdown()
+        await health_runner.cleanup()
         await bot.session.close()
         logger.info("Bot stopped.")
 
