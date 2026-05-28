@@ -1,7 +1,9 @@
 services:
   - type: web
     name: price-ai-bot
-    runtime: docker
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m bot.main
     plan: free
     envVars:
       - key: BOT_TOKEN
@@ -13,8 +15,4 @@ services:
       - key: CHANNEL_ID
         sync: false
       - key: DATABASE_PATH
-        value: /app/data/pricebot.db
-    disk:
-      name: pricebot-data
-      mountPath: /app/data
-      sizeGB: 1
+        value: data/pricebot.db
