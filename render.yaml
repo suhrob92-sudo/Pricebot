@@ -16,3 +16,5 @@ services:
         sync: false
       - key: DATABASE_PATH
         value: data/pricebot.db
+      - key: SCRAPERAPI_KEY
+        sync: false
