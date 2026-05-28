@@ -1,3 +1,4 @@
+import json
 import logging
 from typing import List
 from urllib.parse import quote
@@ -15,88 +16,100 @@ class UzumScraper(BaseScraper):
     MARKETPLACE_EMOJI = "🟠"
     CURRENCY = "UZS"
 
-    def __init__(self):
-        super().__init__()
-        self.headers.update(
-            {
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Referer": "https://uzum.uz/",
-            }
-        )
-
     async def search(self, query: str) -> List[ProductResult]:
         url = f"{BASE_URL}/search?keyword={quote(query)}"
         try:
-            html = await self._get(url, render=True)
+            html = await self._get(url, render=False)
             if not isinstance(html, str):
-                logger.warning("Uzum: no HTML returned")
                 return []
-
             from bs4 import BeautifulSoup
             soup = BeautifulSoup(html, "lxml")
-            results = []
-
-            # Try multiple selectors to find product cards
-            cards = (
-                soup.select('[data-product-id]')
-                or soup.select('[class*="product-card"]')
-                or soup.select('[class*="ProductCard"]')
-                or soup.select('[class*="productCard"]')
-                or soup.select('[class*="catalog-item"]')
-                or soup.select('[class*="catalogItem"]')
-                or soup.select('article')
-            )
-
-            logger.info(f"Uzum: found {len(cards)} product cards")
-
-            for card in cards[:10]:
+            script = soup.find("script", {"id": "__NEXT_DATA__"})
+            if script and script.string:
                 try:
-                    name_el = (
-                        card.select_one('[class*="title"]')
-                        or card.select_one('[class*="name"]')
-                        or card.select_one('h2')
-                        or card.select_one('h3')
-                    )
-                    price_el = (
-                        card.select_one('[class*="price"]')
-                        or card.select_one('[class*="Price"]')
-                        or card.select_one('[class*="cost"]')
-                    )
-                    link_el = card.select_one('a[href]')
-
-                    if not name_el or not price_el:
-                        continue
-
-                    name = name_el.get_text(strip=True)
-                    if not name or len(name) < 3:
-                        continue
-
-                    price_text = price_el.get_text(strip=True)
-                    price = self._parse_price(price_text)
-                    if price <= 0:
-                        continue
-
-                    url_path = link_el.get('href', '') if link_el else ''
-                    if url_path.startswith('/'):
-                        full_url = f"{BASE_URL}{url_path}"
-                    elif url_path.startswith('http'):
-                        full_url = url_path
-                    else:
-                        full_url = BASE_URL
-
-                    img_el = card.select_one('img')
-                    image_url = None
-                    if img_el:
-                        image_url = img_el.get('data-src') or img_el.get('src')
-                        if image_url and not image_url.startswith('http'):
-                            image_url = BASE_URL + image_url
-
-                    results.append(self._make_result(name, price, full_url, image_url))
+                    data = json.loads(script.string)
+                    results = self._find_products(data)
+                    if results:
+                        return results
                 except Exception as e:
-                    logger.debug(f"Uzum: error parsing card: {e}")
-                    continue
-
-            return results
-        except Exception as e:
-            logger.error(f"Uzum search error: {e}")
+                    logger.debug(f"Uzum __NEXT_DATA__ error: {e}")
+            logger.warning("Uzum: no products found")
             return []
+        except Exception as e:
+            logger.error(f"Uzum error: {e}")
+            return []
+
+    def _find_products(self, node, depth=0) -> List[ProductResult]:
+        if depth > 10:
+            return []
+        results = []
+        if isinstance(node, dict):
+            for key in ("products", "productList", "items", "goods", "catalog"):
+                val = node.get(key)
+                if isinstance(val, list) and len(val) > 0:
+                    for item in val[:10]:
+                        r = self._parse_item(item)
+                        if r:
+                            results.append(r)
+                    if results:
+                        return results
+                elif isinstance(val, dict):
+                    sub = val.get("products") or val.get("items") or []
+                    for item in sub[:10]:
+                        r = self._parse_item(item)
+                        if r:
+                            results.append(r)
+                    if results:
+                        return results
+            for v in node.values():
+                if isinstance(v, (dict, list)):
+                    r = self._find_products(v, depth + 1)
+                    if r:
+                        return r
+        elif isinstance(node, list):
+            for item in node[:10]:
+                r = self._parse_item(item)
+                if r:
+                    results.append(r)
+            if results:
+                return results
+        return []
+
+    def _parse_item(self, item) -> ProductResult | None:
+        if not isinstance(item, dict):
+            return None
+        try:
+            name = (item.get("title") or item.get("name") or "").strip()
+            if len(name) < 3:
+                return None
+            price = 0.0
+            for key in ("minSellPrice", "price", "sellPrice", "cost"):
+                raw = item.get(key)
+                if raw is None:
+                    continue
+                if isinstance(raw, dict):
+                    raw = raw.get("amount") or raw.get("value") or 0
+                try:
+                    val = float(raw)
+                    if val > 10_000_000:
+                        val /= 100
+                    if val > 0:
+                        price = val
+                        break
+                except (TypeError, ValueError):
+                    continue
+            if price <= 0:
+                return None
+            pid = item.get("id") or item.get("productId") or ""
+            url = f"{BASE_URL}/product/{pid}" if pid else BASE_URL
+            photos = item.get("photos") or item.get("images") or []
+            image_url = None
+            if photos:
+                first = photos[0]
+                if isinstance(first, dict):
+                    image_url = first.get("photoUrl") or first.get("url")
+                elif isinstance(first, str):
+                    image_url = first
+            return self._make_result(name, price, url, image_url)
+        except Exception:
+            return None
