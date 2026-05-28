@@ -2,7 +2,7 @@ services:
   - type: web
     name: price-ai-bot
     runtime: python
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install --upgrade pip setuptools wheel && pip install --prefer-binary -r requirements.txt
     startCommand: python -m bot.main
     plan: free
     envVars:
