@@ -28,7 +28,7 @@ class OlchaScraper(BaseScraper):
             return []
 
         # render=True needed: Olcha uses Cloudflare bot-protection
-        proxy = f"http://api.scraperapi.com?api_key={SCRAPERAPI_KEY}&render=true&url={quote(url, safe='')}"
+        proxy = f"http://api.scraperapi.com?api_key={SCRAPERAPI_KEY}&render=true&premium=true&url={quote(url, safe='')}"
         try:
             timeout = aiohttp.ClientTimeout(total=90)
             headers = {

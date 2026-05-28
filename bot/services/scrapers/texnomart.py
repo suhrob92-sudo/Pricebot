@@ -35,7 +35,7 @@ class TexnomartScraper(BaseScraper):
         for url_pattern in SEARCH_URLS:
             url = url_pattern.format(q=encoded)
             # render=True: Texnomart is a SPA (shows loading-spinner with render=False)
-            proxy = f"http://api.scraperapi.com?api_key={SCRAPERAPI_KEY}&render=true&url={quote(url, safe='')}"
+            proxy = f"http://api.scraperapi.com?api_key={SCRAPERAPI_KEY}&render=true&premium=true&url={quote(url, safe='')}"
             try:
                 timeout = aiohttp.ClientTimeout(total=90)
                 headers = {

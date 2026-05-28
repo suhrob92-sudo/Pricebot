@@ -362,7 +362,7 @@ async def cmd_testrender(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     from urllib.parse import quote as _quote
     from bs4 import BeautifulSoup
 
-    proxy = f"http://api.scraperapi.com?api_key={SCRAPERAPI_KEY}&render=true&url={_quote(url, safe='')}"
+    proxy = f"http://api.scraperapi.com?api_key={SCRAPERAPI_KEY}&render=true&premium=true&url={_quote(url, safe='')}"
     try:
         timeout = aiohttp.ClientTimeout(total=90)
         headers = {

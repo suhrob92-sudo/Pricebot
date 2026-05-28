@@ -14,11 +14,12 @@ BASE_URL = "https://uzum.uz"
 MAX_PRICE_UZS = 500_000_000  # 500M UZS ≈ $40k — reject anything above this
 
 # Search API candidates: (url, param_name_for_query)
+# api/v2/main/search removed — it returns unrelated featured products
 API_CANDIDATES = [
     ("https://api.uzum.uz/api/v2/category/products/search", "query"),
     ("https://api.uzum.uz/api/main/search/product", "keyword"),
     ("https://api.uzum.uz/api/v1/product/search", "query"),
-    ("https://api.uzum.uz/api/v2/main/search", "keyword"),
+    ("https://api.uzum.uz/api/v2/products", "keyword"),
 ]
 
 
@@ -68,14 +69,30 @@ class UzumScraper(BaseScraper):
                     if resp.status != 200:
                         return []
                     data = await resp.json(content_type=None)
-            return self._extract_products(data)
+            results = self._extract_products(data)
+            # Validate relevance: at least one product name must loosely match query
+            if results and not self._is_relevant(results, query):
+                logger.debug(f"Uzum API {api_url}: results not relevant to '{query}', skipping")
+                return []
+            return results
         except Exception as e:
             logger.debug(f"Uzum API {api_url}: {e}")
             return []
 
+    def _is_relevant(self, results: List[ProductResult], query: str) -> bool:
+        """Return True if at least one result name contains a query word."""
+        words = [w.lower() for w in query.split() if len(w) > 2]
+        if not words:
+            return True  # can't check short queries
+        for r in results[:5]:
+            name_lower = r.name.lower()
+            if any(w in name_lower for w in words):
+                return True
+        return False
+
     async def _search_rendered(self, query: str, key: str) -> List[ProductResult]:
         url = f"{BASE_URL}/search?keyword={quote(query)}"
-        proxy = f"http://api.scraperapi.com?api_key={key}&render=true&url={quote(url, safe='')}"
+        proxy = f"http://api.scraperapi.com?api_key={key}&render=true&premium=true&url={quote(url, safe='')}"
         try:
             timeout = aiohttp.ClientTimeout(total=90)
             async with aiohttp.ClientSession(timeout=timeout) as s:

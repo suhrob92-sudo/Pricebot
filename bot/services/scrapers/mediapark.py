@@ -28,7 +28,7 @@ class MediaparkScraper(BaseScraper):
             return []
 
         # render=True: Mediapark returns small (10KB) bot-protection page otherwise
-        proxy = f"http://api.scraperapi.com?api_key={SCRAPERAPI_KEY}&render=true&url={quote(url, safe='')}"
+        proxy = f"http://api.scraperapi.com?api_key={SCRAPERAPI_KEY}&render=true&premium=true&url={quote(url, safe='')}"
         try:
             timeout = aiohttp.ClientTimeout(total=90)
             headers = {

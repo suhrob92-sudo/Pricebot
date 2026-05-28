@@ -38,7 +38,7 @@ class OzonScraper(BaseScraper):
 
     async def _search_rendered(self, query: str, key: str) -> List[ProductResult]:
         url = f"{BASE_URL}/search/?text={quote(query)}&from_global=true"
-        proxy = f"http://api.scraperapi.com?api_key={key}&render=true&url={quote(url, safe='')}"
+        proxy = f"http://api.scraperapi.com?api_key={key}&render=true&premium=true&url={quote(url, safe='')}"
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             "Accept": "text/html,*/*",
