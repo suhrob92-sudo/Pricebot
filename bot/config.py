@@ -10,6 +10,7 @@ ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
 CHANNEL_ID: str = os.getenv("CHANNEL_ID", "")
 DATABASE_PATH: str = os.getenv("DATABASE_PATH", "data/pricebot.db")
 PORT: int = int(os.getenv("PORT", "8080"))
+SCRAPERAPI_KEY: str = os.getenv("SCRAPERAPI_KEY", "")
 
 SUPPORTED_LANGUAGES = ["uz", "ru"]
 DEFAULT_LANGUAGE = "uz"

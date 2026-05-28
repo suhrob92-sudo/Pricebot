@@ -78,11 +78,32 @@ async def handle_search_query(update: Update, context: ContextTypes.DEFAULT_TYPE
             pass
 
         if not results:
-            await update.message.reply_text(
-                t["no_results"].format(query=query_text),
-                reply_markup=get_back_keyboard(lang, "menu:main"),
-                parse_mode="HTML",
-            )
+            from bot.config import SCRAPERAPI_KEY
+            if not SCRAPERAPI_KEY:
+                no_key_msg = (
+                    "⚙️ <b>Scraper kaliti yo'q</b>\n\n"
+                    "Narxlarni qidirish uchun <code>SCRAPERAPI_KEY</code> kerak.\n\n"
+                    "1. scraperapi.com da bepul ro'yxatdan o'ting (5000 req/oy)\n"
+                    "2. Render → Environment → <code>SCRAPERAPI_KEY</code> = sizning kalit\n"
+                    "3. Botni qayta ishga tushiring"
+                    if lang == "uz" else
+                    "⚙️ <b>Ключ скрапера не настроен</b>\n\n"
+                    "Для поиска цен нужен <code>SCRAPERAPI_KEY</code>.\n\n"
+                    "1. Зарегистрируйтесь на scraperapi.com (5000 req/мес бесплатно)\n"
+                    "2. Render → Environment → <code>SCRAPERAPI_KEY</code> = ваш ключ\n"
+                    "3. Перезапустите бота"
+                )
+                await update.message.reply_text(
+                    no_key_msg,
+                    reply_markup=get_back_keyboard(lang, "menu:main"),
+                    parse_mode="HTML",
+                )
+            else:
+                await update.message.reply_text(
+                    t["no_results"].format(query=query_text),
+                    reply_markup=get_back_keyboard(lang, "menu:main"),
+                    parse_mode="HTML",
+                )
             return ConversationHandler.END
 
         text = comparator.format_results_text(search_data, query_text, lang)

@@ -1,13 +1,14 @@
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional, List, Union
+from urllib.parse import quote
 
 import aiohttp
 from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_TIMEOUT = aiohttp.ClientTimeout(total=15)
+DEFAULT_TIMEOUT = aiohttp.ClientTimeout(total=20)
 
 
 @dataclass
@@ -39,9 +40,9 @@ class BaseScraper:
     def __init__(self):
         self.headers = {
             "User-Agent": (
-                "Mozilla/5.0 (Linux; Android 10; K) "
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0.0.0 Mobile Safari/537.36"
+                "Chrome/121.0.0.0 Safari/537.36"
             ),
             "Accept": "application/json, text/html, */*",
             "Accept-Language": "uz-UZ,uz;q=0.9,ru;q=0.8,en;q=0.7",
@@ -51,15 +52,42 @@ class BaseScraper:
     async def search(self, query: str) -> List[ProductResult]:
         raise NotImplementedError
 
+    def _build_url(self, target_url: str, scraperapi_key: str) -> str:
+        """Wrap URL with ScraperAPI proxy if key is provided."""
+        if scraperapi_key:
+            return f"http://api.scraperapi.com?api_key={scraperapi_key}&url={quote(target_url, safe='')}"
+        return target_url
+
     async def _get(
-        self, url: str, params: Optional[dict] = None, extra_headers: Optional[dict] = None
+        self,
+        url: str,
+        params: Optional[dict] = None,
+        extra_headers: Optional[dict] = None,
+        scraperapi_key: str = "",
     ) -> Optional[Union[dict, str]]:
+        from bot.config import SCRAPERAPI_KEY
+        key = scraperapi_key or SCRAPERAPI_KEY
+
         headers = {**self.headers}
         if extra_headers:
             headers.update(extra_headers)
+
+        # Build full URL with params for ScraperAPI wrapping
+        if key and params:
+            import urllib.parse
+            full_url = url + ("?" if "?" not in url else "&") + urllib.parse.urlencode(params)
+            request_url = self._build_url(full_url, key)
+            request_params = None
+        elif key:
+            request_url = self._build_url(url, key)
+            request_params = None
+        else:
+            request_url = url
+            request_params = params
+
         try:
             async with aiohttp.ClientSession(headers=headers, timeout=DEFAULT_TIMEOUT) as session:
-                async with session.get(url, params=params) as response:
+                async with session.get(request_url, params=request_params) as response:
                     if response.status != 200:
                         logger.warning(
                             f"{self.MARKETPLACE_KEY}: HTTP {response.status} for {url}"
