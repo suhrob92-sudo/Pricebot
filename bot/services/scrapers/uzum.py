@@ -11,12 +11,14 @@ from bot.services.scrapers.base import BaseScraper, ProductResult
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://uzum.uz"
+MAX_PRICE_UZS = 500_000_000  # 500M UZS ≈ $40k — reject anything above this
 
-# Known working API endpoints to try in order
+# Search API candidates: (url, param_name_for_query)
 API_CANDIDATES = [
-    "https://api.uzum.uz/api/v2/main/search",
-    "https://api.uzum.uz/api/main/search/product",
-    "https://api.uzum.uz/api/v1/product/list",
+    ("https://api.uzum.uz/api/v2/category/products/search", "query"),
+    ("https://api.uzum.uz/api/main/search/product", "keyword"),
+    ("https://api.uzum.uz/api/v1/product/search", "query"),
+    ("https://api.uzum.uz/api/v2/main/search", "keyword"),
 ]
 
 
@@ -36,8 +38,8 @@ class UzumScraper(BaseScraper):
 
     async def search(self, query: str) -> List[ProductResult]:
         # Try direct REST API first (fast, no credits used)
-        for api_url in API_CANDIDATES:
-            results = await self._try_api(api_url, query)
+        for api_url, param_name in API_CANDIDATES:
+            results = await self._try_api(api_url, param_name, query)
             if results:
                 return results
 
@@ -50,9 +52,9 @@ class UzumScraper(BaseScraper):
 
         return []
 
-    async def _try_api(self, api_url: str, query: str) -> List[ProductResult]:
+    async def _try_api(self, api_url: str, param_name: str, query: str) -> List[ProductResult]:
         params = {
-            "keyword": query,
+            param_name: query,
             "size": "20",
             "page": "0",
             "sortField": "RELEVANCE",
@@ -167,7 +169,7 @@ class UzumScraper(BaseScraper):
                     val = float(raw)
                     if val > 10_000_000:
                         val /= 100
-                    if val > 0:
+                    if 0 < val <= MAX_PRICE_UZS:
                         price = val
                         break
                 except (TypeError, ValueError):

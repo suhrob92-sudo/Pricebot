@@ -330,6 +330,99 @@ async def cmd_diagnose(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         pass
 
 
+async def cmd_testrender(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Fetch a site with render=True and show actual CSS classes + price/name snippets."""
+    if not is_admin(update.effective_user.id):
+        return
+
+    args = context.args
+    site_name = (args[0] if args else "olcha").lower()
+
+    site_map = {
+        "olcha": "https://olcha.uz/search/iphone",
+        "texnomart": "https://texnomart.uz/search?q=iphone",
+        "mediapark": "https://mediapark.uz/search?q=iphone",
+        "ozon": "https://www.ozon.ru/search/?text=iphone&from_global=true",
+        "uzum": "https://uzum.uz/search?keyword=iphone",
+    }
+    url = site_map.get(site_name)
+    if not url:
+        await update.message.reply_text(f"❌ Noma'lum sayt. Mavjudlar: {', '.join(site_map)}")
+        return
+
+    from bot.config import SCRAPERAPI_KEY
+    if not SCRAPERAPI_KEY:
+        await update.message.reply_text("❌ SCRAPERAPI_KEY yo'q")
+        return
+
+    msg = await update.message.reply_text(f"🌐 {site_name} render=True bilan yuklanmoqda...")
+
+    import aiohttp
+    import re as _re
+    from urllib.parse import quote as _quote
+    from bs4 import BeautifulSoup
+
+    proxy = f"http://api.scraperapi.com?api_key={SCRAPERAPI_KEY}&render=true&url={_quote(url, safe='')}"
+    try:
+        timeout = aiohttp.ClientTimeout(total=90)
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Accept": "text/html,*/*",
+            "Accept-Language": "ru-RU,ru;q=0.9",
+        }
+        async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
+            async with session.get(proxy) as resp:
+                status = resp.status
+                raw_bytes = await resp.content.read(300 * 1024)
+                html = raw_bytes.decode("utf-8", errors="replace")
+    except Exception as e:
+        await msg.edit_text(f"❌ Xato: {e}")
+        return
+
+    soup = BeautifulSoup(html, "lxml")
+    size_kb = len(html) // 1024
+
+    # Collect all unique class strings (first word of each class attribute)
+    all_classes = []
+    for tag in soup.find_all(True, limit=500):
+        cls = tag.get("class")
+        if cls:
+            all_classes.extend(cls)
+    from collections import Counter
+    top_classes = [c for c, _ in Counter(all_classes).most_common(20)
+                   if len(c) > 3 and not c.startswith("_")]
+
+    # Find any price-looking numbers
+    text_body = soup.get_text(" ")
+    prices = _re.findall(r'\b\d{4,10}\b', text_body)[:10]
+
+    # Find any product-card-like elements
+    card_samples = []
+    for sel in ("[class*='product']", "[class*='item']", "[class*='card']", "article"):
+        found = soup.select(sel)
+        if found:
+            sample = found[0].get_text(strip=True)[:80]
+            card_samples.append(f"  {sel}[0]: {sample}")
+            break
+
+    lines = [
+        f"🌐 {site_name}: HTTP {status} | {size_kb}KB",
+        f"📋 Top class-lar: {top_classes[:12]}",
+        f"💰 Raqamlar: {prices[:8]}",
+    ]
+    if card_samples:
+        lines.append("🃏 Karta namunasi:")
+        lines.extend(card_samples)
+    else:
+        lines.append("🃏 product/item/card element topilmadi")
+
+    # Check for __NEXT_DATA__
+    has_next = "__NEXT_DATA__" in html
+    lines.append(f"📦 __NEXT_DATA__: {'✅' if has_next else '❌'}")
+
+    await msg.edit_text("\n".join(lines))
+
+
 def get_handlers():
     broadcast_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(cb_broadcast_prompt, pattern=r"^admin:broadcast$")],
@@ -349,6 +442,7 @@ def get_handlers():
         CommandHandler("unban", cmd_unban),
         CommandHandler("debug", cmd_debug),
         CommandHandler("diagnose", cmd_diagnose),
+        CommandHandler("testrender", cmd_testrender),
         CallbackQueryHandler(cb_admin_stats, pattern=r"^admin:stats$"),
         CallbackQueryHandler(cb_admin_users, pattern=r"^admin:users$"),
         broadcast_conv,
