@@ -1,31 +1,35 @@
 import logging
 
-from aiogram import Router, F
-from aiogram.filters import Command
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import Message, CallbackQuery
+from telegram import Update
+from telegram.ext import (
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    ConversationHandler,
+    ContextTypes,
+    filters,
+)
 
 from bot.config import ADMIN_IDS
 from bot.keyboards.main_menu import get_admin_keyboard, get_back_keyboard
 
 logger = logging.getLogger(__name__)
-router = Router()
 
-
-class AdminStates(StatesGroup):
-    waiting_broadcast = State()
-    waiting_ban_id = State()
+BROADCAST_MSG = 1
 
 
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
 
 
-@router.message(Command("admin"))
-async def cmd_admin(message: Message, db, user_language: str = "uz", **kwargs):
-    if not is_admin(message.from_user.id):
-        await message.answer("❌ Bu buyruq faqat adminlar uchun.")
+async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("❌ Bu buyruq faqat adminlar uchun.")
+        return
+
+    db = context.application.bot_data.get("db")
+    if not db:
+        await update.message.reply_text("❌ DB xatolik")
         return
 
     stats = await db.get_admin_stats()
@@ -37,13 +41,20 @@ async def cmd_admin(message: Message, db, user_language: str = "uz", **kwargs):
         f"🔍 Bugun qidiruvlar: <b>{stats['today_searches']}</b>\n"
         f"🚫 Bloklangan: <b>{stats['banned_users']}</b>"
     )
-    await message.answer(text, reply_markup=get_admin_keyboard(), parse_mode="HTML")
+    await update.message.reply_text(text, reply_markup=get_admin_keyboard(), parse_mode="HTML")
 
 
-@router.callback_query(F.data == "admin:stats")
-async def cb_admin_stats(callback: CallbackQuery, db, **kwargs):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("❌ Ruxsat yo'q", show_alert=True)
+async def cb_admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+
+    if not is_admin(query.from_user.id):
+        await query.answer("❌ Ruxsat yo'q", show_alert=True)
+        return
+
+    db = context.application.bot_data.get("db")
+    if not db:
+        await query.answer("❌ DB xatolik", show_alert=True)
         return
 
     stats = await db.get_admin_stats()
@@ -54,47 +65,46 @@ async def cb_admin_stats(callback: CallbackQuery, db, **kwargs):
         f"🔍 Bugun qidiruvlar: <b>{stats['today_searches']}</b>\n"
         f"🚫 Bloklangan: <b>{stats['banned_users']}</b>"
     )
-    await callback.message.edit_text(text, reply_markup=get_admin_keyboard(), parse_mode="HTML")
-    await callback.answer()
+    await query.edit_message_text(text, reply_markup=get_admin_keyboard(), parse_mode="HTML")
 
 
-@router.callback_query(F.data == "admin:broadcast")
-async def cb_broadcast_prompt(callback: CallbackQuery, state: FSMContext, **kwargs):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("❌ Ruxsat yo'q", show_alert=True)
-        return
+async def cb_broadcast_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
 
-    await state.set_state(AdminStates.waiting_broadcast)
-    await callback.message.answer(
+    if not is_admin(query.from_user.id):
+        await query.answer("❌ Ruxsat yo'q", show_alert=True)
+        return ConversationHandler.END
+
+    await query.message.reply_text(
         "📢 <b>Xabar yuborish</b>\n\nBarcha foydalanuvchilarga yuboriladigan xabarni yozing:\n\n/cancel — bekor qilish",
         parse_mode="HTML",
     )
-    await callback.answer()
+    return BROADCAST_MSG
 
 
-@router.message(AdminStates.waiting_broadcast)
-async def handle_broadcast(message: Message, state: FSMContext, db, **kwargs):
-    if not is_admin(message.from_user.id):
-        return
+async def handle_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if not is_admin(update.effective_user.id):
+        return ConversationHandler.END
 
-    if message.text == "/cancel":
-        await state.clear()
-        await message.answer("❌ Bekor qilindi.")
-        return
+    db = context.application.bot_data.get("db")
+    if not db:
+        await update.message.reply_text("❌ DB xatolik")
+        return ConversationHandler.END
 
     users = await db.get_all_users()
     sent = 0
     failed = 0
 
-    status_msg = await message.answer(f"⏳ Yuborilmoqda... 0/{len(users)}")
+    status_msg = await update.message.reply_text(f"⏳ Yuborilmoqda... 0/{len(users)}")
 
     for i, user in enumerate(users):
         if user.get("is_banned"):
             continue
         try:
-            await message.bot.send_message(
+            await context.bot.send_message(
                 user["telegram_id"],
-                message.text,
+                update.message.text,
                 parse_mode="HTML",
             )
             sent += 1
@@ -107,19 +117,35 @@ async def handle_broadcast(message: Message, state: FSMContext, db, **kwargs):
             except Exception:
                 pass
 
-    await state.clear()
-    await status_msg.edit_text(
-        f"✅ Xabar yuborildi!\n\n"
-        f"📤 Muvaffaqiyatli: <b>{sent}</b>\n"
-        f"❌ Xatolik: <b>{failed}</b>",
-        parse_mode="HTML",
-    )
+    try:
+        await status_msg.edit_text(
+            f"✅ Xabar yuborildi!\n\n"
+            f"📤 Muvaffaqiyatli: <b>{sent}</b>\n"
+            f"❌ Xatolik: <b>{failed}</b>",
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass
+
+    return ConversationHandler.END
 
 
-@router.callback_query(F.data == "admin:users")
-async def cb_admin_users(callback: CallbackQuery, db, **kwargs):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("❌ Ruxsat yo'q", show_alert=True)
+async def cancel_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    await update.message.reply_text("❌ Bekor qilindi.")
+    return ConversationHandler.END
+
+
+async def cb_admin_users(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+
+    if not is_admin(query.from_user.id):
+        await query.answer("❌ Ruxsat yo'q", show_alert=True)
+        return
+
+    db = context.application.bot_data.get("db")
+    if not db:
+        await query.answer("❌ DB xatolik", show_alert=True)
         return
 
     users = await db.get_all_users()
@@ -133,45 +159,69 @@ async def cb_admin_users(callback: CallbackQuery, db, **kwargs):
     if len(users) > 20:
         text += f"\n\n... va yana {len(users) - 20} ta"
 
-    await callback.message.edit_text(
+    await query.edit_message_text(
         text,
         reply_markup=get_admin_keyboard(),
         parse_mode="HTML",
     )
-    await callback.answer()
 
 
-@router.message(Command("ban"))
-async def cmd_ban(message: Message, db, **kwargs):
-    if not is_admin(message.from_user.id):
+async def cmd_ban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_admin(update.effective_user.id):
         return
 
-    parts = message.text.split()
+    db = context.application.bot_data.get("db")
+    parts = update.message.text.split()
     if len(parts) < 2:
-        await message.answer("❌ Foydalanish: /ban <user_id>")
+        await update.message.reply_text("❌ Foydalanish: /ban <user_id>")
         return
 
     try:
         target_id = int(parts[1])
-        await db.ban_user(target_id)
-        await message.answer(f"🚫 Foydalanuvchi {target_id} bloklandi.")
+        if db:
+            await db.ban_user(target_id)
+        await update.message.reply_text(f"🚫 Foydalanuvchi {target_id} bloklandi.")
     except ValueError:
-        await message.answer("❌ Noto'g'ri ID format.")
+        await update.message.reply_text("❌ Noto'g'ri ID format.")
 
 
-@router.message(Command("unban"))
-async def cmd_unban(message: Message, db, **kwargs):
-    if not is_admin(message.from_user.id):
+async def cmd_unban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_admin(update.effective_user.id):
         return
 
-    parts = message.text.split()
+    db = context.application.bot_data.get("db")
+    parts = update.message.text.split()
     if len(parts) < 2:
-        await message.answer("❌ Foydalanish: /unban <user_id>")
+        await update.message.reply_text("❌ Foydalanish: /unban <user_id>")
         return
 
     try:
         target_id = int(parts[1])
-        await db.unban_user(target_id)
-        await message.answer(f"✅ Foydalanuvchi {target_id} blokdan chiqarildi.")
+        if db:
+            await db.unban_user(target_id)
+        await update.message.reply_text(f"✅ Foydalanuvchi {target_id} blokdan chiqarildi.")
     except ValueError:
-        await message.answer("❌ Noto'g'ri ID format.")
+        await update.message.reply_text("❌ Noto'g'ri ID format.")
+
+
+def get_handlers():
+    broadcast_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(cb_broadcast_prompt, pattern=r"^admin:broadcast$")],
+        states={
+            BROADCAST_MSG: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_broadcast),
+            ],
+        },
+        fallbacks=[
+            CommandHandler("cancel", cancel_broadcast),
+        ],
+        per_message=False,
+    )
+    return [
+        CommandHandler("admin", cmd_admin),
+        CommandHandler("ban", cmd_ban),
+        CommandHandler("unban", cmd_unban),
+        CallbackQueryHandler(cb_admin_stats, pattern=r"^admin:stats$"),
+        CallbackQueryHandler(cb_admin_users, pattern=r"^admin:users$"),
+        broadcast_conv,
+    ]

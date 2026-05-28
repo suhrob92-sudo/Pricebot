@@ -1,13 +1,16 @@
 import logging
 
-from aiogram import Router, F
-from aiogram.types import CallbackQuery
+from telegram import Update
+from telegram.ext import (
+    CallbackQueryHandler,
+    ContextTypes,
+)
 
 from bot.keyboards.main_menu import get_back_keyboard
+from bot.middlewares.language import get_user_lang
 from bot.utils.formatter import format_price_history_table, format_price
 
 logger = logging.getLogger(__name__)
-router = Router()
 
 
 def get_texts(language: str) -> dict:
@@ -16,42 +19,57 @@ def get_texts(language: str) -> dict:
     return UZ if language == "uz" else RU
 
 
-@router.callback_query(F.data.startswith("history:show:"))
-async def cb_show_history(callback: CallbackQuery, db, user_language: str = "uz", **kwargs):
-    product_id = int(callback.data.split(":")[2])
-    t = get_texts(user_language)
+async def cb_show_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
 
+    db = context.application.bot_data.get("db")
+    lang = "uz"
+    if db:
+        lang = await get_user_lang(db, query.from_user.id)
+
+    t = get_texts(lang)
+
+    if not db:
+        await query.message.reply_text(
+            t.get("no_history", "📭 Narx tarixi mavjud emas."),
+            reply_markup=get_back_keyboard(lang, "menu:main"),
+            parse_mode="HTML",
+        )
+        return
+
+    product_id = int(query.data.split(":")[2])
     product = await db.get_product(product_id)
+
     if not product:
-        await callback.answer("❌ Mahsulot topilmadi", show_alert=True)
+        await query.answer("❌ Mahsulot topilmadi", show_alert=True)
         return
 
     history = await db.get_price_history(product_id, days=90)
 
     if not history:
-        await callback.message.answer(
+        await query.message.reply_text(
             t.get("no_history", "📭 Narx tarixi mavjud emas."),
-            reply_markup=get_back_keyboard(user_language, "menu:main"),
+            reply_markup=get_back_keyboard(lang, "menu:main"),
             parse_mode="HTML",
         )
-        await callback.answer()
         return
 
     name = product["name"][:50]
     marketplace = product["marketplace"]
     current_price = format_price(product["current_price"], product.get("currency", "UZS"))
 
-    history_table = format_price_history_table(history, user_language)
+    history_table = format_price_history_table(history, lang)
 
     if len(history) >= 2:
         oldest = history[0]["price"]
         newest = history[-1]["price"]
         if oldest > newest:
-            trend = "📉 Narx tushdi" if user_language == "uz" else "📉 Цена снизилась"
+            trend = "📉 Narx tushdi" if lang == "uz" else "📉 Цена снизилась"
         elif oldest < newest:
-            trend = "📈 Narx ko'tarildi" if user_language == "uz" else "📈 Цена выросла"
+            trend = "📈 Narx ko'tarildi" if lang == "uz" else "📈 Цена выросла"
         else:
-            trend = "➡️ Narx o'zgarmadi" if user_language == "uz" else "➡️ Цена не изменилась"
+            trend = "➡️ Narx o'zgarmadi" if lang == "uz" else "➡️ Цена не изменилась"
     else:
         trend = ""
 
@@ -65,9 +83,14 @@ async def cb_show_history(callback: CallbackQuery, db, user_language: str = "uz"
         f"{trend}"
     )
 
-    await callback.message.answer(
+    await query.message.reply_text(
         text,
-        reply_markup=get_back_keyboard(user_language, "menu:main"),
+        reply_markup=get_back_keyboard(lang, "menu:main"),
         parse_mode="HTML",
     )
-    await callback.answer()
+
+
+def get_handlers():
+    return [
+        CallbackQueryHandler(cb_show_history, pattern=r"^history:show:\d+$"),
+    ]

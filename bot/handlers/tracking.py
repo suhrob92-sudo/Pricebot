@@ -1,18 +1,17 @@
 import logging
 
-from aiogram import Router, F
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import Message, CallbackQuery
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram.ext import (
+    CallbackQueryHandler,
+    ContextTypes,
+)
 
 from bot.keyboards.main_menu import get_back_keyboard
+from bot.keyboards.inline_kb import get_tracking_list_keyboard
+from bot.middlewares.language import get_user_lang
+from bot.utils.formatter import format_tracking_item
 
 logger = logging.getLogger(__name__)
-router = Router()
-
-
-class TrackingStates(StatesGroup):
-    waiting_target_price = State()
 
 
 def get_texts(language: str) -> dict:
@@ -21,43 +20,66 @@ def get_texts(language: str) -> dict:
     return UZ if language == "uz" else RU
 
 
-@router.callback_query(F.data == "menu:tracking")
-async def cb_tracking_menu(callback: CallbackQuery, db, user_language: str = "uz", **kwargs):
-    t = get_texts(user_language)
-    user_id = callback.from_user.id
+async def cb_tracking_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+
+    db = context.application.bot_data.get("db")
+    lang = "uz"
+    if db:
+        lang = await get_user_lang(db, query.from_user.id)
+
+    t = get_texts(lang)
+
+    if not db:
+        await query.edit_message_text(
+            t["no_tracking"],
+            reply_markup=get_back_keyboard(lang, "menu:main"),
+            parse_mode="HTML",
+        )
+        return
+
+    user_id = query.from_user.id
     tracked = await db.get_user_tracked_products(user_id)
 
     if not tracked:
-        await callback.message.edit_text(
+        await query.edit_message_text(
             t["no_tracking"],
-            reply_markup=get_back_keyboard(user_language, "menu:main"),
+            reply_markup=get_back_keyboard(lang, "menu:main"),
             parse_mode="HTML",
         )
-        await callback.answer()
         return
-
-    from bot.keyboards.inline_kb import get_tracking_list_keyboard
-    from bot.utils.formatter import format_tracking_item
 
     text = t["tracking_list"]
     for item in tracked[:5]:
-        text += format_tracking_item(item, user_language) + "\n\n"
+        text += format_tracking_item(item, lang) + "\n\n"
 
-    kb = get_tracking_list_keyboard(tracked, user_language, page=0)
-    await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
-    await callback.answer()
+    kb = get_tracking_list_keyboard(tracked, lang, page=0)
+    await query.edit_message_text(text, reply_markup=kb, parse_mode="HTML")
 
 
-@router.callback_query(F.data.startswith("track:add:"))
-async def cb_track_add(callback: CallbackQuery, db, user_language: str = "uz", state: FSMContext = None, **kwargs):
-    product_id = int(callback.data.split(":")[2])
-    t = get_texts(user_language)
-    user_id = callback.from_user.id
+async def cb_track_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+
+    db = context.application.bot_data.get("db")
+    lang = "uz"
+    if db:
+        lang = await get_user_lang(db, query.from_user.id)
+
+    t = get_texts(lang)
+
+    if not db:
+        await query.answer("❌ DB xatolik", show_alert=True)
+        return
+
+    product_id = int(query.data.split(":")[2])
+    user_id = query.from_user.id
 
     from bot.config import MAX_TRACKED_PRODUCTS
     tracked = await db.get_user_tracked_products(user_id)
     if len(tracked) >= MAX_TRACKED_PRODUCTS:
-        await callback.answer(
+        await query.answer(
             t["track_limit"].format(limit=MAX_TRACKED_PRODUCTS),
             show_alert=True,
         )
@@ -65,62 +87,88 @@ async def cb_track_add(callback: CallbackQuery, db, user_language: str = "uz", s
 
     success = await db.add_tracked_product(user_id, product_id, target_price=None)
     if success:
-        await callback.answer(t["track_added"], show_alert=True)
+        await query.answer(t["track_added"], show_alert=True)
     else:
-        await callback.answer(t.get("already_tracking", "ℹ️ Allaqachon kuzatilmoqda"), show_alert=True)
+        await query.answer(t.get("already_tracking", "ℹ️ Allaqachon kuzatilmoqda"), show_alert=True)
 
 
-@router.callback_query(F.data.startswith("track:remove:"))
-async def cb_track_remove(callback: CallbackQuery, db, user_language: str = "uz", **kwargs):
-    tracking_id = int(callback.data.split(":")[2])
-    t = get_texts(user_language)
-    user_id = callback.from_user.id
+async def cb_track_remove(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+
+    db = context.application.bot_data.get("db")
+    lang = "uz"
+    if db:
+        lang = await get_user_lang(db, query.from_user.id)
+
+    t = get_texts(lang)
+
+    if not db:
+        await query.answer("❌ DB xatolik", show_alert=True)
+        return
+
+    tracking_id = int(query.data.split(":")[2])
+    user_id = query.from_user.id
 
     await db.remove_tracked_product(tracking_id, user_id)
-    await callback.answer(t.get("tracking_removed", "✅ O'chirildi"), show_alert=True)
+    await query.answer(t.get("tracking_removed", "✅ O'chirildi"), show_alert=True)
 
     tracked = await db.get_user_tracked_products(user_id)
     if not tracked:
-        await callback.message.edit_text(
+        await query.edit_message_text(
             t["no_tracking"],
-            reply_markup=get_back_keyboard(user_language, "menu:main"),
+            reply_markup=get_back_keyboard(lang, "menu:main"),
             parse_mode="HTML",
         )
         return
 
-    from bot.keyboards.inline_kb import get_tracking_list_keyboard
-    from bot.utils.formatter import format_tracking_item
-
     text = t["tracking_list"]
     for item in tracked[:5]:
-        text += format_tracking_item(item, user_language) + "\n\n"
+        text += format_tracking_item(item, lang) + "\n\n"
 
-    kb = get_tracking_list_keyboard(tracked, user_language, page=0)
-    await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    kb = get_tracking_list_keyboard(tracked, lang, page=0)
+    try:
+        await query.edit_message_text(text, reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        pass
 
 
-@router.callback_query(F.data.startswith("track:page:"))
-async def cb_track_page(callback: CallbackQuery, db, user_language: str = "uz", **kwargs):
-    page = int(callback.data.split(":")[2])
-    t = get_texts(user_language)
-    user_id = callback.from_user.id
+async def cb_track_page(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+
+    db = context.application.bot_data.get("db")
+    lang = "uz"
+    if db:
+        lang = await get_user_lang(db, query.from_user.id)
+
+    t = get_texts(lang)
+    page = int(query.data.split(":")[2])
+    user_id = query.from_user.id
+
+    if not db:
+        return
 
     tracked = await db.get_user_tracked_products(user_id)
     if not tracked:
-        await callback.answer()
         return
-
-    from bot.keyboards.inline_kb import get_tracking_list_keyboard
-    from bot.utils.formatter import format_tracking_item
 
     start = page * 5
     text = t["tracking_list"]
     for item in tracked[start:start + 5]:
-        text += format_tracking_item(item, user_language) + "\n\n"
+        text += format_tracking_item(item, lang) + "\n\n"
 
-    kb = get_tracking_list_keyboard(tracked, user_language, page=page)
+    kb = get_tracking_list_keyboard(tracked, lang, page=page)
     try:
-        await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+        await query.edit_message_text(text, reply_markup=kb, parse_mode="HTML")
     except Exception:
         pass
-    await callback.answer()
+
+
+def get_handlers():
+    return [
+        CallbackQueryHandler(cb_tracking_menu, pattern=r"^menu:tracking$"),
+        CallbackQueryHandler(cb_track_add, pattern=r"^track:add:\d+$"),
+        CallbackQueryHandler(cb_track_remove, pattern=r"^track:remove:\d+$"),
+        CallbackQueryHandler(cb_track_page, pattern=r"^track:page:\d+$"),
+    ]

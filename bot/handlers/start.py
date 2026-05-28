@@ -32,10 +32,10 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await update.message.reply_text(t["banned_message"])
             return
 
-    lang = db_user.get("language", "uz") if db_user else "uz"
+    lang = db_user.get("language") if db_user else None
 
-    # New users: show language selection first
-    if db_user and not db_user.get("language"):
+    # New users or users without language set: show language selection first
+    if not lang:
         await update.message.reply_text(
             "🌐 Tilni tanlang / Выберите язык:",
             reply_markup=get_language_keyboard(),

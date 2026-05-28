@@ -1,21 +1,25 @@
 import logging
 
-from aiogram import Router, F
-from aiogram.filters import Command
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import Message, CallbackQuery
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram.ext import (
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    ConversationHandler,
+    ContextTypes,
+    filters,
+)
 
 from bot.keyboards.main_menu import get_back_keyboard
+from bot.keyboards.inline_kb import get_results_navigation_keyboard, get_product_actions_keyboard
+from bot.middlewares.language import get_user_lang
 from bot.services.price_comparator import PriceComparator
 
 logger = logging.getLogger(__name__)
-router = Router()
+
 comparator = PriceComparator()
 
-
-class SearchStates(StatesGroup):
-    waiting_query = State()
+SEARCH_QUERY = 1
 
 
 def get_texts(language: str) -> dict:
@@ -24,98 +28,139 @@ def get_texts(language: str) -> dict:
     return UZ if language == "uz" else RU
 
 
-@router.callback_query(F.data == "menu:search")
-async def cb_search_menu(callback: CallbackQuery, state: FSMContext, user_language: str = "uz", **kwargs):
-    t = get_texts(user_language)
-    await state.set_state(SearchStates.waiting_query)
-    await callback.message.edit_text(
+async def cb_search_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+
+    db = context.application.bot_data.get("db")
+    lang = "uz"
+    if db:
+        lang = await get_user_lang(db, query.from_user.id)
+
+    t = get_texts(lang)
+    await query.edit_message_text(
         t["search_prompt"],
-        reply_markup=get_back_keyboard(user_language, "menu:main"),
+        reply_markup=get_back_keyboard(lang, "menu:main"),
         parse_mode="HTML",
     )
-    await callback.answer()
+    return SEARCH_QUERY
 
 
-@router.message(SearchStates.waiting_query)
-async def handle_search_query(message: Message, state: FSMContext, db, user_language: str = "uz", **kwargs):
-    query = message.text.strip()
-    if not query or len(query) < 2:
-        t = get_texts(user_language)
-        await message.answer(t.get("error_general", "❌ Xatolik"), parse_mode="HTML")
-        return
+async def handle_search_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    db = context.application.bot_data.get("db")
+    lang = "uz"
+    if db:
+        lang = await get_user_lang(db, update.effective_user.id)
 
-    t = get_texts(user_language)
-    searching_msg = await message.answer(t["searching"], parse_mode="HTML")
+    t = get_texts(lang)
+    query_text = update.message.text.strip()
+
+    if not query_text or len(query_text) < 2:
+        await update.message.reply_text(
+            t.get("error_general", "❌ Xatolik"),
+            parse_mode="HTML",
+        )
+        return SEARCH_QUERY
+
+    searching_msg = await update.message.reply_text(t["searching"], parse_mode="HTML")
 
     try:
-        search_data = await comparator.search_all(query)
+        search_data = await comparator.search_all(query_text)
         results = search_data.get("results", [])
         total = search_data.get("total", 0)
 
-        await db.save_search(message.from_user.id, query, total)
+        if db:
+            await db.save_search(update.effective_user.id, query_text, total)
 
-        await searching_msg.delete()
+        try:
+            await searching_msg.delete()
+        except Exception:
+            pass
 
         if not results:
-            await message.answer(
-                t["no_results"].format(query=query),
-                reply_markup=get_back_keyboard(user_language, "menu:main"),
+            await update.message.reply_text(
+                t["no_results"].format(query=query_text),
+                reply_markup=get_back_keyboard(lang, "menu:main"),
                 parse_mode="HTML",
             )
-            await state.clear()
-            return
+            return ConversationHandler.END
 
-        text = comparator.format_results_text(search_data, user_language)
+        text = comparator.format_results_text(search_data, query_text, lang)
 
-        saved_ids = []
-        for r in results:
-            pid = await db.save_product(
-                name=r.name,
-                marketplace=r.marketplace,
-                url=r.url,
-                image_url=r.image_url,
-                price=r.price,
-                currency=r.currency,
-            )
-            r.id = pid
-            saved_ids.append(pid)
+        saved_items = []
+        if db:
+            for r in results:
+                try:
+                    pid = await db.save_product(
+                        name=r.name,
+                        marketplace=r.marketplace,
+                        url=r.url,
+                        image_url=r.image_url,
+                        price=r.price,
+                        currency=r.currency,
+                    )
+                    r.id = pid
+                    saved_items.append({"id": pid, "name": r.name})
+                except Exception as e:
+                    logger.error(f"Error saving product: {e}")
 
-        await state.update_data(last_results=saved_ids, last_query=query)
+        context.user_data["last_search_results"] = saved_items
+        context.user_data["last_search_query"] = query_text
 
-        from bot.keyboards.inline_kb import get_results_navigation_keyboard
-        kb = get_results_navigation_keyboard(
-            [{"id": r.id, "name": r.name} for r in results if r.id],
-            user_language, 0, query
-        )
-
-        await message.answer(text, reply_markup=kb, parse_mode="HTML")
+        kb = get_results_navigation_keyboard(saved_items, lang, 0, query_text)
+        await update.message.reply_text(text, reply_markup=kb, parse_mode="HTML")
 
     except Exception as e:
         logger.error(f"Search handler error: {e}")
-        await searching_msg.delete()
-        t = get_texts(user_language)
-        await message.answer(
+        try:
+            await searching_msg.delete()
+        except Exception:
+            pass
+        await update.message.reply_text(
             t.get("error_general", "❌ Xatolik yuz berdi."),
-            reply_markup=get_back_keyboard(user_language, "menu:main"),
+            reply_markup=get_back_keyboard(lang, "menu:main"),
             parse_mode="HTML",
         )
-    finally:
-        await state.clear()
+
+    return ConversationHandler.END
 
 
-@router.callback_query(F.data.startswith("product:view:"))
-async def cb_product_view(callback: CallbackQuery, db, user_language: str = "uz", **kwargs):
-    product_id = int(callback.data.split(":")[2])
+async def cancel_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    db = context.application.bot_data.get("db")
+    lang = "uz"
+    if db:
+        lang = await get_user_lang(db, update.effective_user.id)
+
+    await update.message.reply_text(
+        "❌ Bekor qilindi." if lang == "uz" else "❌ Отменено.",
+        reply_markup=get_back_keyboard(lang, "menu:main"),
+    )
+    return ConversationHandler.END
+
+
+async def cb_product_view(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+
+    db = context.application.bot_data.get("db")
+    lang = "uz"
+    if db:
+        lang = await get_user_lang(db, query.from_user.id)
+
+    product_id = int(query.data.split(":")[2])
+
+    if not db:
+        await query.answer("❌ DB xatolik", show_alert=True)
+        return
+
     product = await db.get_product(product_id)
-
     if not product:
-        await callback.answer("❌ Mahsulot topilmadi", show_alert=True)
+        await query.answer("❌ Mahsulot topilmadi", show_alert=True)
         return
 
     from bot.utils.formatter import format_price, get_marketplace_emoji
-    from bot.keyboards.inline_kb import get_product_actions_keyboard
 
-    t = get_texts(user_language)
+    t = get_texts(lang)
     price_str = format_price(product["current_price"], product.get("currency", "UZS"))
     emoji = get_marketplace_emoji(product["marketplace"])
 
@@ -127,9 +172,28 @@ async def cb_product_view(callback: CallbackQuery, db, user_language: str = "uz"
     if product.get("url"):
         text += f"🔗 <a href='{product['url']}'>Ko'rish</a>"
 
-    await callback.message.answer(
+    await query.message.reply_text(
         text,
-        reply_markup=get_product_actions_keyboard(product_id, user_language),
+        reply_markup=get_product_actions_keyboard(product_id, lang),
         parse_mode="HTML",
     )
-    await callback.answer()
+
+
+def get_handlers():
+    conv_handler = ConversationHandler(
+        entry_points=[CallbackQueryHandler(cb_search_menu, pattern=r"^menu:search$")],
+        states={
+            SEARCH_QUERY: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_search_query),
+            ],
+        },
+        fallbacks=[
+            CommandHandler("cancel", cancel_search),
+            CommandHandler("start", cancel_search),
+        ],
+        per_message=False,
+    )
+    return [
+        conv_handler,
+        CallbackQueryHandler(cb_product_view, pattern=r"^product:view:\d+$"),
+    ]
