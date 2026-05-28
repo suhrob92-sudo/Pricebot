@@ -237,7 +237,7 @@ async def cmd_debug(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_diagnose(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Deep diagnostic: raw HTTP check for each site."""
+    """Deep diagnostic: raw HTTP check per site, updates message after each."""
     if not is_admin(update.effective_user.id):
         return
 
@@ -247,71 +247,83 @@ async def cmd_diagnose(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     from urllib.parse import quote as _quote
     from bot.config import SCRAPERAPI_KEY
 
-    msg = await update.message.reply_text("🔬 Chuqur diagnostika...", parse_mode="HTML")
+    msg = await update.message.reply_text(
+        f"🔬 Diagnostika boshlandi...\n🔑 ScraperAPI: {'✅' if SCRAPERAPI_KEY else '❌'}",
+    )
 
     sites = [
         ("🟠 Uzum", "https://uzum.uz/search?keyword=iphone"),
         ("🔴 Olcha", "https://olcha.uz/search/iphone"),
         ("🔵 Texnomart", "https://texnomart.uz/search?query=iphone"),
         ("🟢 Mediapark", "https://mediapark.uz/search?q=iphone"),
-        ("🩷 WB API", "https://search.wb.ru/exactmatch/ru/common/v5/search?query=iphone&resultset=catalog&limit=5&sort=popular&page=1&appType=1&curr=rub&lang=ru&locale=ru&spp=27"),
+        ("🩷 WB", "https://search.wb.ru/exactmatch/ru/common/v5/search?query=iphone&resultset=catalog&limit=5&sort=popular&page=1&appType=1&curr=rub&lang=ru&locale=ru&spp=27"),
         ("🟣 Ozon", "https://www.ozon.ru/search/?text=iphone&from_global=true"),
     ]
 
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    req_headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Accept-Language": "ru-RU,ru;q=0.9",
         "Accept": "text/html,application/xhtml+xml,*/*",
     }
-    lines = [f"🔑 ScraperAPI: {'✅' if SCRAPERAPI_KEY else '❌'}\n"]
+    done: list[str] = []
 
-    async def check_site(name, url):
+    for name, url in sites:
         proxy_url = (
             f"http://api.scraperapi.com?api_key={SCRAPERAPI_KEY}&url={_quote(url, safe='')}"
             if SCRAPERAPI_KEY else url
         )
         try:
-            timeout = aiohttp.ClientTimeout(total=30)
-            async with aiohttp.ClientSession(headers=headers) as session:
+            timeout = aiohttp.ClientTimeout(total=20)
+            async with aiohttp.ClientSession(headers=req_headers) as session:
                 async with session.get(proxy_url, timeout=timeout) as resp:
-                    status = resp.status
-                    raw = await resp.text(errors="replace")
+                    http_status = resp.status
+                    # Read at most 200KB to avoid memory issues
+                    raw_bytes = await resp.content.read(200 * 1024)
+                    raw = raw_bytes.decode("utf-8", errors="replace")
                     size_kb = len(raw) // 1024
-                    has_next = "__NEXT_DATA__" in raw
-                    # For JSON API (WB), check product count
+
                     if "wb.ru" in url:
                         try:
                             d = _json.loads(raw)
                             prods = (d.get("data", {}).get("products") or
                                      d.get("catalog", {}).get("products") or [])
-                            return f"{name}: HTTP {status} | {size_kb}KB | {len(prods)} products"
+                            line = f"{name}: {http_status} | {size_kb}KB | {len(prods)} mahsulot"
                         except Exception:
-                            return f"{name}: HTTP {status} | {size_kb}KB | JSON parse error"
-                    if has_next:
-                        # Count keys in __NEXT_DATA__
-                        import re as _re
-                        m = _re.search(r'<script id="__NEXT_DATA__"[^>]*>(\{.*?\})</script>', raw, _re.DOTALL)
-                        if m:
-                            try:
-                                nd = _json.loads(m.group(1))
-                                keys = list(nd.get("props", {}).get("pageProps", {}).keys())[:5]
-                                return f"{name}: HTTP {status} | {size_kb}KB | NEXT_DATA✅ | pageProps: {keys}"
-                            except Exception:
-                                return f"{name}: HTTP {status} | {size_kb}KB | NEXT_DATA✅ (parse err)"
-                        return f"{name}: HTTP {status} | {size_kb}KB | NEXT_DATA✅"
+                            line = f"{name}: {http_status} | {size_kb}KB | JSON xato"
+                    elif "__NEXT_DATA__" in raw:
+                        # Simple key extraction — no regex, just string split
+                        start = raw.find('"pageProps":{') + len('"pageProps":')
+                        if start > len('"pageProps":'):
+                            chunk = raw[start:start + 300]
+                            # grab first few key names
+                            import re as _re
+                            keys = _re.findall(r'"(\w+)":', chunk)[:6]
+                            line = f"{name}: {http_status} | {size_kb}KB | NEXT✅ | keys={keys}"
+                        else:
+                            line = f"{name}: {http_status} | {size_kb}KB | NEXT✅ (no pageProps)"
                     else:
-                        snippet = raw[raw.find("<title"):raw.find("<title") + 80] if "<title" in raw else raw[:80]
-                        return f"{name}: HTTP {status} | {size_kb}KB | NO __NEXT_DATA__ | {snippet[:60]}"
+                        # Show page title or first 60 chars
+                        t_start = raw.find("<title>")
+                        t_end = raw.find("</title>")
+                        title = raw[t_start + 7:t_end][:50] if t_start >= 0 else raw[:60]
+                        line = f"{name}: {http_status} | {size_kb}KB | NO NEXT | {title}"
+            done.append(line)
         except asyncio.TimeoutError:
-            return f"{name}: ⏱ Timeout (30s)"
+            done.append(f"{name}: ⏱ Timeout 20s")
         except Exception as e:
-            return f"{name}: ❌ {str(e)[:60]}"
+            done.append(f"{name}: ❌ {str(e)[:50]}")
 
-    tasks = [check_site(name, url) for name, url in sites]
-    results = await asyncio.gather(*tasks)
-    lines.extend(results)
+        try:
+            await msg.edit_text(
+                f"🔬 Diagnostika ({len(done)}/{len(sites)}):\n" + "\n".join(done)
+            )
+        except Exception:
+            pass
 
-    await msg.edit_text("\n".join(lines), parse_mode="HTML")
+    try:
+        await msg.edit_text("🔬 Natija:\n" + "\n".join(done))
+    except Exception:
+        pass
 
 
 def get_handlers():
